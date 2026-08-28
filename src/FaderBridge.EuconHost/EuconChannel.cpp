@@ -17,6 +17,8 @@ constexpr float kMinFaderDb = -96.0F;
 constexpr float kMaxFaderDb = 12.0F;
 constexpr NEuCon::uint16 kFaderStepCount = 1024U;
 constexpr NEuCon::uint16 kKnobStepCount = 193U;
+constexpr NEuCon::uint16 kFaderUnityIndex = static_cast<NEuCon::uint16>(
+    ((0.0F - kMinFaderDb) / (kMaxFaderDb - kMinFaderDb)) * (kFaderStepCount - 1U) + 0.5F);
 }
 
 EuconChannel::EuconChannel(const int channelIndex, const std::wstring& displayName,
@@ -148,7 +150,7 @@ void EuconChannel::SetFaderPosition(const float normalizedPosition)
     if (fader_.GetPrimitive(EuControlFader::kID_Slider, &primitive) == kERR_OK && primitive)
     {
         const auto index = static_cast<NEuCon::uint16>(std::lround(
-            std::clamp(normalizedPosition, 0.0F, 1.0F) * (kFaderStepCount - 1U)));
+            std::clamp(normalizedPosition, 0.0F, 1.0F) * kFaderUnityIndex));
         primitive->SetCurrentIndex(index);
     }
 }
@@ -224,8 +226,9 @@ void EuconChannel::OnPrimitiveCallback(const tEVT eventType, NEuCon::uint32,
 
     if (controlId == FaderId && primitiveId == EuControlFader::kID_Slider)
     {
-        const auto normalizedPosition = static_cast<float>(newValueIndex) /
-            static_cast<float>(kFaderStepCount - 1U);
+        const auto normalizedPosition = std::clamp(
+            static_cast<float>(newValueIndex) / static_cast<float>(kFaderUnityIndex),
+            0.0F, 1.0F);
         faderHandler_(channelIndex_, normalizedPosition);
     }
     else if (controlId == FaderId && primitiveId == EuControlFader::kID_Mute)
