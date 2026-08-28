@@ -13,30 +13,11 @@
 
 namespace
 {
-constexpr float kMinFaderDb = -96.0F;
-constexpr float kMaxFaderDb = 0.0F;
 constexpr float kVolumeDifference = 0.001F;
 constexpr float kPendingMatch = 0.005F;
 constexpr auto kVolumeHold = std::chrono::milliseconds(650);
 constexpr auto kMuteHold = std::chrono::milliseconds(350);
 
-float VolumeToFaderDb(const float volume)
-{
-    if (volume <= 0.0F)
-    {
-        return kMinFaderDb;
-    }
-    return std::clamp(20.0F * std::log10(volume), kMinFaderDb, kMaxFaderDb);
-}
-
-float FaderDbToVolume(const float valueDb)
-{
-    if (valueDb <= kMinFaderDb)
-    {
-        return 0.0F;
-    }
-    return std::clamp(std::pow(10.0F, valueDb / 20.0F), 0.0F, 1.0F);
-}
 }
 
 EuconHost::EuconHost(const HWND notificationWindow) : notificationWindow_(notificationWindow)
@@ -73,8 +54,8 @@ EuconHost::EuconHost(const HWND notificationWindow) : notificationWindow_(notifi
             [report](const int ch, const float value) { report(ch, value, 0); },
             [report](const int ch, const float value) { report(ch, value, 1); },
             [report](const int ch, const float value) { report(ch, value, 2); });
-        channel->SetFaderDb(kMinFaderDb);
-        channel->SetKnobDb(kMinFaderDb);
+        channel->SetFaderPosition(0.0F);
+        channel->SetKnobPosition(0.0F);
         channel->SetMeterDb(-120.0F);
         node_->RegisterProcessor(*channel);
         channels_.push_back(std::move(channel));
@@ -142,9 +123,8 @@ int EuconHost::ApplyAudioFrame(const AudioFrame& frame)
             if (!cache.volumePending &&
                 (!cache.active || fullRefresh || std::fabs(strip.volume - cache.volume) > kVolumeDifference))
             {
-                const auto faderDb = VolumeToFaderDb(strip.volume);
-                channel->SetFaderDb(faderDb);
-                channel->SetKnobDb(faderDb);
+                channel->SetFaderPosition(strip.volume);
+                channel->SetKnobPosition(strip.volume);
                 cache.volume = strip.volume;
             }
 
@@ -166,8 +146,8 @@ int EuconHost::ApplyAudioFrame(const AudioFrame& frame)
         else if (cache.active)
         {
             channel->SetName(L"");
-            channel->SetFaderDb(kMinFaderDb);
-            channel->SetKnobDb(kMinFaderDb);
+            channel->SetFaderPosition(0.0F);
+            channel->SetKnobPosition(0.0F);
             channel->WriteMeterDb(meterWriter, -120.0F);
             channel->SetMute(false);
             cache = ChannelCache{};
@@ -184,7 +164,7 @@ bool EuconHost::HandleSurfaceChange(const SurfaceChange& change)
     }
     if (change.kind == 0 || change.kind == 1)
     {
-        const auto volume = FaderDbToVolume(change.value);
+        const auto volume = std::clamp(change.value, 0.0F, 1.0F);
         auto& cache = cache_[change.channel];
         cache.volumePending = true;
         cache.requestedVolume = volume;
@@ -192,7 +172,7 @@ bool EuconHost::HandleSurfaceChange(const SurfaceChange& change)
         cache.volumeHoldUntil = std::chrono::steady_clock::now() + kVolumeHold;
         if (change.kind == 1)
         {
-            channels_[change.channel]->SetFaderDb(change.value);
+            channels_[change.channel]->SetFaderPosition(volume);
         }
         const auto sent = audioPipe_->SendVolume(change.channel, volume);
         if (!sent)

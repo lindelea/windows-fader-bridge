@@ -9,11 +9,14 @@
 #include "EuPrimitiveSwitch.h"
 
 #include <algorithm>
+#include <cmath>
 
 namespace
 {
 constexpr float kMinFaderDb = -96.0F;
 constexpr float kMaxFaderDb = 12.0F;
+constexpr NEuCon::uint16 kFaderStepCount = 1024U;
+constexpr NEuCon::uint16 kKnobStepCount = 193U;
 }
 
 EuconChannel::EuconChannel(const int channelIndex, const std::wstring& displayName,
@@ -56,7 +59,7 @@ void EuconChannel::InitializeFader()
     EuPrimitiveControl* primitive = nullptr;
     if (fader_.GetPrimitive(EuControlFader::kID_Slider, &primitive) == kERR_OK && primitive)
     {
-        primitive->Initialize(kTYP_Float, 1024U);
+        primitive->Initialize(kTYP_Float, kFaderStepCount);
         primitive->LoadValueTableInterpolated(kMinFaderDb, kMaxFaderDb);
     }
 
@@ -122,7 +125,7 @@ void EuconChannel::InitializeKnob()
     EuPrimitiveControl* primitive = nullptr;
     if (knob_.GetPrimitive(EuControlKnobCell::kID_Knob, &primitive) == kERR_OK && primitive)
     {
-        primitive->Initialize(kTYP_Float, 193U);
+        primitive->Initialize(kTYP_Float, kKnobStepCount);
         primitive->LoadValueTableInterpolated(kMinFaderDb, kMaxFaderDb);
         if (auto* rotary = dynamic_cast<EuPrimitiveKnob*>(primitive))
         {
@@ -139,21 +142,25 @@ void EuconChannel::InitializeKnob()
     knobSet_.PushBack(&knob_, knobMemberId_);
 }
 
-void EuconChannel::SetFaderDb(const float valueDb)
+void EuconChannel::SetFaderPosition(const float normalizedPosition)
 {
     EuPrimitiveControl* primitive = nullptr;
     if (fader_.GetPrimitive(EuControlFader::kID_Slider, &primitive) == kERR_OK && primitive)
     {
-        primitive->SetCurrentValue(std::clamp(valueDb, kMinFaderDb, kMaxFaderDb));
+        const auto index = static_cast<NEuCon::uint16>(std::lround(
+            std::clamp(normalizedPosition, 0.0F, 1.0F) * (kFaderStepCount - 1U)));
+        primitive->SetCurrentIndex(index);
     }
 }
 
-void EuconChannel::SetKnobDb(const float valueDb)
+void EuconChannel::SetKnobPosition(const float normalizedPosition)
 {
     EuPrimitiveControl* primitive = nullptr;
     if (knob_.GetPrimitive(EuControlKnobCell::kID_Knob, &primitive) == kERR_OK && primitive)
     {
-        primitive->SetCurrentValue(std::clamp(valueDb, kMinFaderDb, kMaxFaderDb));
+        const auto index = static_cast<NEuCon::uint16>(std::lround(
+            std::clamp(normalizedPosition, 0.0F, 1.0F) * (kKnobStepCount - 1U)));
+        primitive->SetCurrentIndex(index);
     }
 }
 
@@ -217,9 +224,9 @@ void EuconChannel::OnPrimitiveCallback(const tEVT eventType, NEuCon::uint32,
 
     if (controlId == FaderId && primitiveId == EuControlFader::kID_Slider)
     {
-        NEuCon::float32 value = 0.0F;
-        affectedPrimitive->GetValueAt(newValueIndex, value);
-        faderHandler_(channelIndex_, value);
+        const auto normalizedPosition = static_cast<float>(newValueIndex) /
+            static_cast<float>(kFaderStepCount - 1U);
+        faderHandler_(channelIndex_, normalizedPosition);
     }
     else if (controlId == FaderId && primitiveId == EuControlFader::kID_Mute)
     {
@@ -236,8 +243,8 @@ void EuconChannel::OnPrimitiveCallback(const tEVT eventType, NEuCon::uint32,
     else if (controlId == KnobSetId && arrayMemberControlId == knobMemberId_ &&
         primitiveId == EuControlKnobCell::kID_Knob)
     {
-        NEuCon::float32 value = 0.0F;
-        affectedPrimitive->GetValueAt(newValueIndex, value);
-        knobHandler_(channelIndex_, value);
+        const auto normalizedPosition = static_cast<float>(newValueIndex) /
+            static_cast<float>(kKnobStepCount - 1U);
+        knobHandler_(channelIndex_, normalizedPosition);
     }
 }

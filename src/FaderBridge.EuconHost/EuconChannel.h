@@ -19,8 +19,8 @@ public:
                  ChangeHandler knobHandler, ChangeHandler muteHandler);
     ~EuconChannel() override;
 
-    void SetFaderDb(float valueDb);
-    void SetKnobDb(float valueDb);
+    void SetFaderPosition(float normalizedPosition);
+    void SetKnobPosition(float normalizedPosition);
     void SetMeterDb(float valueDb);
     void WriteMeterDb(class EuBatchedMeterWriter& writer, float valueDb);
     void SetMute(bool value);
