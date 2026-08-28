@@ -19,7 +19,6 @@ constexpr float kVolumeDifference = 0.001F;
 constexpr float kPendingMatch = 0.005F;
 constexpr auto kVolumeHold = std::chrono::milliseconds(650);
 constexpr auto kMuteHold = std::chrono::milliseconds(350);
-constexpr auto kFullRefreshInterval = std::chrono::milliseconds(750);
 
 float VolumeToFaderDb(const float volume)
 {
@@ -113,7 +112,7 @@ int EuconHost::ApplyAudioFrame(const AudioFrame& frame)
     }
 
     const auto now = std::chrono::steady_clock::now();
-    const auto fullRefresh = now - lastFullRefresh_ >= kFullRefreshInterval;
+    const auto fullRefresh = node_->ConsumeRefreshRequest();
     EuBatchedMeterWriter meterWriter(*node_);
     int activeCount = 0;
     for (const auto& strip : frame.strips)
@@ -173,10 +172,6 @@ int EuconHost::ApplyAudioFrame(const AudioFrame& frame)
             channel->SetMute(false);
             cache = ChannelCache{};
         }
-    }
-    if (fullRefresh)
-    {
-        lastFullRefresh_ = now;
     }
     return activeCount;
 }

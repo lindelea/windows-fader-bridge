@@ -4,6 +4,7 @@
 #include "AudioPipeClient.h"
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <memory>
 #include <string>
@@ -24,7 +25,18 @@ struct SurfaceChange
 class FaderBridgeNode final : public EuNode
 {
 public:
-    void OnCallback(tEVT, void*, void*, void*, int&) override {}
+    void OnCallback(tEVT eventType, void*, void*, void*, int&) override
+    {
+        if (eventType == kEVT_NODE_SurfaceNodeAdded || eventType == kEVT_NODE_SurfaceNodeRemoved)
+        {
+            refreshRequested_.store(true);
+        }
+    }
+
+    bool ConsumeRefreshRequest() noexcept { return refreshRequested_.exchange(false); }
+
+private:
+    std::atomic<bool> refreshRequested_ = true;
 };
 
 class EuconHost final
@@ -63,5 +75,4 @@ private:
     std::vector<std::unique_ptr<EuconChannel>> channels_;
     std::unique_ptr<AudioPipeClient> audioPipe_;
     std::array<ChannelCache, ChannelCount> cache_{};
-    std::chrono::steady_clock::time_point lastFullRefresh_{};
 };

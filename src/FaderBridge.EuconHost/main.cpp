@@ -9,6 +9,7 @@ namespace
 {
 constexpr wchar_t kWindowClass[] = L"FaderBridgeEuconProbeWindow";
 std::unique_ptr<EuconHost> g_host;
+int g_activeCount = -1;
 
 LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
 {
@@ -45,9 +46,13 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             return 0;
         }
         const auto activeCount = g_host->ApplyAudioFrame(*frame);
-        const auto title = L"FaderBridge EUCON — " + std::to_wstring(activeCount) +
-            L" Windows audio apps";
-        SetWindowTextW(window, title.c_str());
+        if (activeCount != g_activeCount)
+        {
+            g_activeCount = activeCount;
+            const auto title = L"FaderBridge EUCON — " + std::to_wstring(activeCount) +
+                L" Windows audio apps";
+            SetWindowTextW(window, title.c_str());
+        }
         return 0;
     }
     case WM_DESTROY:
