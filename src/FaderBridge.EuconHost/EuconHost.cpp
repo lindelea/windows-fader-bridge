@@ -37,12 +37,15 @@ EuconHost::EuconHost(const HWND notificationWindow) : notificationWindow_(notifi
     channels_.reserve(ChannelCount);
     for (int index = 0; index < ChannelCount; ++index)
     {
-        const auto report = [this](const int channel, const float value, const int kind)
+        const auto report = [this](const int channel, const float value, const int kind,
+            const NEuCon::uint16 rawIndex, const float rawTableValue)
         {
             auto change = std::make_unique<SurfaceChange>();
             change->channel = channel;
             change->kind = kind;
             change->value = value;
+            change->rawIndex = rawIndex;
+            change->rawTableValue = rawTableValue;
             if (PostMessageW(notificationWindow_, kSurfaceChangeMessage, 0,
                 reinterpret_cast<LPARAM>(change.get())))
             {
@@ -51,9 +54,12 @@ EuconHost::EuconHost(const HWND notificationWindow) : notificationWindow_(notifi
         };
         auto channel = std::make_unique<EuconChannel>(index,
             L"",
-            [report](const int ch, const float value) { report(ch, value, 0); },
-            [report](const int ch, const float value) { report(ch, value, 1); },
-            [report](const int ch, const float value) { report(ch, value, 2); });
+            [report](const int ch, const float value, const NEuCon::uint16 rawIndex,
+                const float rawValue) { report(ch, value, 0, rawIndex, rawValue); },
+            [report](const int ch, const float value, const NEuCon::uint16 rawIndex,
+                const float rawValue) { report(ch, value, 1, rawIndex, rawValue); },
+            [report](const int ch, const float value, const NEuCon::uint16 rawIndex,
+                const float rawValue) { report(ch, value, 2, rawIndex, rawValue); });
         channel->SetFaderPosition(0.0F);
         channel->SetKnobPosition(0.0F);
         channel->SetMeterDb(-120.0F);

@@ -13,7 +13,8 @@
 class EuconChannel final : public EuProcessor
 {
 public:
-    using ChangeHandler = std::function<void(int channelIndex, float value)>;
+    using ChangeHandler = std::function<void(int channelIndex, float value,
+        NEuCon::uint16 rawIndex, float rawTableValue)>;
 
     EuconChannel(int channelIndex, const std::wstring& displayName, ChangeHandler faderHandler,
                  ChangeHandler knobHandler, ChangeHandler muteHandler);

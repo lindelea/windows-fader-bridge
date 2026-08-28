@@ -20,6 +20,8 @@ struct SurfaceChange
     int channel = 0;
     int kind = 0;
     float value = 0.0F;
+    NEuCon::uint16 rawIndex = 0U;
+    float rawTableValue = 0.0F;
 };
 
 class FaderBridgeNode final : public EuNode

@@ -229,7 +229,9 @@ void EuconChannel::OnPrimitiveCallback(const tEVT eventType, NEuCon::uint32,
         const auto normalizedPosition = std::clamp(
             static_cast<float>(newValueIndex) / static_cast<float>(kFaderUnityIndex),
             0.0F, 1.0F);
-        faderHandler_(channelIndex_, normalizedPosition);
+        NEuCon::float32 tableValue = 0.0F;
+        affectedPrimitive->GetValueAt(newValueIndex, tableValue);
+        faderHandler_(channelIndex_, normalizedPosition, newValueIndex, tableValue);
     }
     else if (controlId == FaderId && primitiveId == EuControlFader::kID_Mute)
     {
@@ -241,13 +243,16 @@ void EuconChannel::OnPrimitiveCallback(const tEVT eventType, NEuCon::uint32,
             led->SetCurrentIndex(static_cast<NEuCon::uint16>(
                 value == 0 ? kLEDStatus_Off : kLEDStatus_On));
         }
-        muteHandler_(channelIndex_, static_cast<float>(value));
+        muteHandler_(channelIndex_, static_cast<float>(value), newValueIndex,
+            static_cast<float>(value));
     }
     else if (controlId == KnobSetId && arrayMemberControlId == knobMemberId_ &&
         primitiveId == EuControlKnobCell::kID_Knob)
     {
         const auto normalizedPosition = static_cast<float>(newValueIndex) /
             static_cast<float>(kKnobStepCount - 1U);
-        knobHandler_(channelIndex_, normalizedPosition);
+        NEuCon::float32 tableValue = 0.0F;
+        affectedPrimitive->GetValueAt(newValueIndex, tableValue);
+        knobHandler_(channelIndex_, normalizedPosition, newValueIndex, tableValue);
     }
 }
