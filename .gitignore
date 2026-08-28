@@ -1,0 +1,18 @@
+bin/
+obj/
+artifacts/
+$out/
+.vs/
+TestResults/
+research/upstream-asar/
+research/tools/
+sdk/
+tmp/
+EUCON_WorkstationUnifiedInstallWindows_*/
+EuConSDK_Setup_*/
+EUCON_WorkstationUnifiedInstallWindows_*.zip
+EuConSDK_Setup_*.zip
+MIDI Mixer Setup *.exe
+*.log
+*.user
+*.suo
