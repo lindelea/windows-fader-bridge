@@ -13,7 +13,7 @@
 namespace
 {
 constexpr float kMinFaderDb = -96.0F;
-constexpr float kMaxFaderDb = 12.0F;
+constexpr float kMaxFaderDb = 0.0F;
 }
 
 EuconChannel::EuconChannel(const int channelIndex, const std::wstring& displayName,

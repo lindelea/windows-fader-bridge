@@ -14,7 +14,7 @@
 namespace
 {
 constexpr float kMinFaderDb = -96.0F;
-constexpr float kMaxFaderDb = 12.0F;
+constexpr float kMaxFaderDb = 0.0F;
 constexpr float kVolumeDifference = 0.001F;
 constexpr float kPendingMatch = 0.005F;
 constexpr auto kVolumeHold = std::chrono::milliseconds(650);
@@ -23,13 +23,20 @@ constexpr auto kFullRefreshInterval = std::chrono::milliseconds(750);
 
 float VolumeToFaderDb(const float volume)
 {
-    return kMinFaderDb + std::clamp(volume, 0.0F, 1.0F) * (kMaxFaderDb - kMinFaderDb);
+    if (volume <= 0.0F)
+    {
+        return kMinFaderDb;
+    }
+    return std::clamp(20.0F * std::log10(volume), kMinFaderDb, kMaxFaderDb);
 }
 
 float FaderDbToVolume(const float valueDb)
 {
-    return (std::clamp(valueDb, kMinFaderDb, kMaxFaderDb) - kMinFaderDb) /
-        (kMaxFaderDb - kMinFaderDb);
+    if (valueDb <= kMinFaderDb)
+    {
+        return 0.0F;
+    }
+    return std::clamp(std::pow(10.0F, valueDb / 20.0F), 0.0F, 1.0F);
 }
 }
 
