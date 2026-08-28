@@ -85,9 +85,9 @@ void PaintDebugWindow(const HWND window)
         text << L"Windows feedback CH" << (g_debug.channel + 1) << L": inactive / empty\r\n";
     }
 
-    text << L"\r\nReference: bottom index 0 (-96 dB) | unity index 909 (~0 dB) | "
+    text << L"\r\nAvid ExFaderTable: bottom index 0 (Mute/-144.5 dB) | unity index 728 (0 dB) | "
             L"hardware top index 1023 (+12 dB)\r\n"
-            L"Windows mapping: 0-100% <-> S3 index 0-909";
+            L"Windows mapping: scalar <-> 20*log10(value); maximum is S3 unity 0 dB";
 
     auto value = text.str();
     InflateRect(&client, -16, -14);

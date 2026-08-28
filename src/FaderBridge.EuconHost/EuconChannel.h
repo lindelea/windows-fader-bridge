@@ -20,7 +20,7 @@ public:
                  ChangeHandler knobHandler, ChangeHandler muteHandler);
     ~EuconChannel() override;
 
-    void SetFaderPosition(float normalizedPosition);
+    void SetFaderDb(float valueDb);
     void SetKnobPosition(float normalizedPosition);
     void SetMeterDb(float valueDb);
     void WriteMeterDb(class EuBatchedMeterWriter& writer, float valueDb);
