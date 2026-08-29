@@ -15,6 +15,14 @@ first validation surfaces. iCON P1-Nano/Mackie Control support is also planned.
 
 ![Windows Fader Bridge command categories in the EuControl Soft Key Command Editor](docs/images/eucontrol-command-assignment.png)
 
+### Avid Control on iPad
+
+![Windows audio applications and devices controlled from Avid Control on an iPad](docs/images/avid-control-ipad.png)
+
+A physical control surface is optional. EuControl can expose the same Windows
+mixer model to Avid Control on an iPad, providing software faders, meters,
+channel colors, mute, solo, pan, banking and soft-key access.
+
 ### EUCON surface in use
 
 ![Windows audio applications and devices controlled from a EUCON surface](docs/images/eucon-surface-in-use.jpeg)
