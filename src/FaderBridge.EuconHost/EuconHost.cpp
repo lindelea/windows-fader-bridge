@@ -70,6 +70,47 @@ NEuCon::int32 EuconTrackType(const AudioStripRole role)
     }
 }
 
+NEuCon::uint32 EuconMeterRole(const AudioMeterRole role)
+{
+    switch (role)
+    {
+    case AudioMeterRole::Left: return kMTR_Left;
+    case AudioMeterRole::Right: return kMTR_Right;
+    case AudioMeterRole::Center: return kMTR_Center;
+    case AudioMeterRole::Lfe: return kMTR_LFE;
+    case AudioMeterRole::LeftSurround: return kMTR_LeftSurround;
+    case AudioMeterRole::RightSurround: return kMTR_RightSurround;
+    case AudioMeterRole::LeftBackSurround: return kMTR_LeftBackSurround;
+    case AudioMeterRole::RightBackSurround: return kMTR_RightBackSurround;
+    case AudioMeterRole::CenterSurround: return kMTR_CenterSurround;
+    case AudioMeterRole::LeftCenter: return kMTR_LeftCenter;
+    case AudioMeterRole::RightCenter: return kMTR_RightCenter;
+    case AudioMeterRole::Top: return kMTR_Top;
+    case AudioMeterRole::HeightLeftFront: return kMTR_HeightLeftFront;
+    case AudioMeterRole::HeightCenterFront: return kMTR_HeightCenterFront;
+    case AudioMeterRole::HeightRightFront: return kMTR_HeightRightFront;
+    case AudioMeterRole::HeightLeftSurround: return kMTR_HeightLeftSurround;
+    case AudioMeterRole::HeightCenterSurround: return kMTR_HeightCenterSurround;
+    case AudioMeterRole::HeightRightSurround: return kMTR_HeightRightSurround;
+    default: return kMTR_Mono;
+    }
+}
+
+std::vector<NEuCon::uint32> EuconMeterRoles(const AudioStripState& strip)
+{
+    std::vector<NEuCon::uint32> roles;
+    roles.reserve(strip.meterRoles.size());
+    for (const auto role : strip.meterRoles)
+    {
+        roles.push_back(EuconMeterRole(role));
+    }
+    if (roles.empty())
+    {
+        roles.push_back(kMTR_Mono);
+    }
+    return roles;
+}
+
 template<typename TDataVector>
 void ApplyMeterVisibility(void* data, const bool visible)
 {
@@ -310,7 +351,8 @@ void EuconHost::ReconcileChannelTopology(const AudioFrame& frame)
         {
             auto added = CreateTrack(order, strip);
             node_->RegisterProcessor(*added->channel);
-            added->channel->PostRegisterMeterInitialization();
+            added->channel->PostRegisterMeterInitialization(
+                frame.monoAudioEnabled, EuconMeterRoles(strip));
             FB_TRACE("EUCON_TRACK_ADD order=%d slot=%d color=%06X", order, strip.slot,
                 static_cast<unsigned>(strip.channelColor & 0x00FFFFFFU));
             tracks_.push_back(std::move(added));
@@ -479,6 +521,7 @@ int EuconHost::ApplyAudioFrame(const AudioFrame& frame)
         auto& cache = track->cache;
         const auto order = track->route->channelOrder.load();
         ++activeCount;
+        channel.ConfigureMeter(frame.monoAudioEnabled, EuconMeterRoles(strip));
         const auto trackType = EuconTrackType(strip.role);
         if (!cache.active || cache.trackType != trackType)
         {
@@ -556,7 +599,7 @@ int EuconHost::ApplyAudioFrame(const AudioFrame& frame)
             cache.volume = strip.volume;
         }
 
-        channel.WriteMeterDb(meterWriter, strip.peakDb, strip.peakDb >= -0.01F);
+        channel.WriteMeterDb(meterWriter, strip.meterDb);
         cache.peakDb = strip.peakDb;
 
         const auto muteMatchesPending = cache.mutePending && strip.muted == cache.requestedMute;

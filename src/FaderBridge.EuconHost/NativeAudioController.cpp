@@ -5,6 +5,7 @@
 #include <Audiopolicy.h>
 #include <Endpointvolume.h>
 #include <Mmdeviceapi.h>
+#include <Ksmedia.h>
 #include <Propsys.h>
 #include <Roapi.h>
 #include <ShObjIdl.h>
@@ -334,6 +335,123 @@ float PeakToDb(const float peak)
 {
     return peak <= 0.000001F ? -120.0F :
         std::clamp(20.0F * std::log10(peak), -120.0F, 0.0F);
+}
+
+AudioMeterRole SpeakerRole(const DWORD speaker)
+{
+    switch (speaker)
+    {
+    case SPEAKER_FRONT_LEFT: return AudioMeterRole::Left;
+    case SPEAKER_FRONT_RIGHT: return AudioMeterRole::Right;
+    case SPEAKER_FRONT_CENTER: return AudioMeterRole::Center;
+    case SPEAKER_LOW_FREQUENCY: return AudioMeterRole::Lfe;
+    case SPEAKER_BACK_LEFT: return AudioMeterRole::LeftBackSurround;
+    case SPEAKER_BACK_RIGHT: return AudioMeterRole::RightBackSurround;
+    case SPEAKER_FRONT_LEFT_OF_CENTER: return AudioMeterRole::LeftCenter;
+    case SPEAKER_FRONT_RIGHT_OF_CENTER: return AudioMeterRole::RightCenter;
+    case SPEAKER_BACK_CENTER: return AudioMeterRole::CenterSurround;
+    case SPEAKER_SIDE_LEFT: return AudioMeterRole::LeftSurround;
+    case SPEAKER_SIDE_RIGHT: return AudioMeterRole::RightSurround;
+    case SPEAKER_TOP_CENTER: return AudioMeterRole::Top;
+    case SPEAKER_TOP_FRONT_LEFT: return AudioMeterRole::HeightLeftFront;
+    case SPEAKER_TOP_FRONT_CENTER: return AudioMeterRole::HeightCenterFront;
+    case SPEAKER_TOP_FRONT_RIGHT: return AudioMeterRole::HeightRightFront;
+    case SPEAKER_TOP_BACK_LEFT: return AudioMeterRole::HeightLeftSurround;
+    case SPEAKER_TOP_BACK_CENTER: return AudioMeterRole::HeightCenterSurround;
+    case SPEAKER_TOP_BACK_RIGHT: return AudioMeterRole::HeightRightSurround;
+    default: return AudioMeterRole::Mono;
+    }
+}
+
+std::vector<AudioMeterRole> DefaultMeterRoles(const UINT channels)
+{
+    if (channels <= 1U)
+    {
+        return { AudioMeterRole::Mono };
+    }
+    static constexpr AudioMeterRole order[] =
+    {
+        AudioMeterRole::Left, AudioMeterRole::Right, AudioMeterRole::Center,
+        AudioMeterRole::Lfe, AudioMeterRole::LeftSurround, AudioMeterRole::RightSurround,
+        AudioMeterRole::LeftBackSurround, AudioMeterRole::RightBackSurround,
+        AudioMeterRole::Top, AudioMeterRole::HeightLeftFront,
+        AudioMeterRole::HeightCenterFront, AudioMeterRole::HeightRightFront,
+        AudioMeterRole::HeightLeftSurround, AudioMeterRole::HeightCenterSurround,
+        AudioMeterRole::HeightRightSurround, AudioMeterRole::CenterSurround,
+    };
+    const auto count = std::min<std::size_t>(channels, std::size(order));
+    return { std::begin(order), std::begin(order) + count };
+}
+
+std::vector<AudioMeterRole> MeterRolesForFormat(const WAVEFORMATEX* format)
+{
+    if (!format || format->nChannels == 0U)
+    {
+        return { AudioMeterRole::Mono };
+    }
+    if (format->wFormatTag != WAVE_FORMAT_EXTENSIBLE ||
+        format->cbSize < sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX))
+    {
+        return DefaultMeterRoles(format->nChannels);
+    }
+    const auto* extensible = reinterpret_cast<const WAVEFORMATEXTENSIBLE*>(format);
+    std::vector<AudioMeterRole> result;
+    result.reserve(format->nChannels);
+    for (DWORD bit = 1U; bit != 0U && result.size() < format->nChannels; bit <<= 1U)
+    {
+        if ((extensible->dwChannelMask & bit) != 0U)
+        {
+            result.push_back(SpeakerRole(bit));
+        }
+    }
+    return result.size() == format->nChannels
+        ? result : DefaultMeterRoles(format->nChannels);
+}
+
+std::vector<AudioMeterRole> EndpointMeterRoles(IMMDevice* device)
+{
+    ComPtr<IAudioClient> client;
+    WAVEFORMATEX* format = nullptr;
+    std::vector<AudioMeterRole> result;
+    if (device && SUCCEEDED(device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr,
+        reinterpret_cast<void**>(client.GetAddressOf()))) &&
+        SUCCEEDED(client->GetMixFormat(&format)))
+    {
+        result = MeterRolesForFormat(format);
+    }
+    if (format)
+    {
+        CoTaskMemFree(format);
+    }
+    return result;
+}
+
+void MergeMeterPeaks(IAudioMeterInformation* meter, std::vector<float>& peaks)
+{
+    if (!meter)
+    {
+        return;
+    }
+    UINT count = 0U;
+    if (FAILED(meter->GetMeteringChannelCount(&count)) || count == 0U)
+    {
+        return;
+    }
+    count = std::min<UINT>(count,
+        static_cast<UINT>(AudioStripState::MaxMeterChannels));
+    std::vector<float> values(count, 0.0F);
+    if (FAILED(meter->GetChannelsPeakValues(count, values.data())))
+    {
+        return;
+    }
+    if (peaks.size() < values.size())
+    {
+        peaks.resize(values.size(), 0.0F);
+    }
+    for (std::size_t index = 0; index < values.size(); ++index)
+    {
+        peaks[index] = std::max(peaks[index], values[index]);
+    }
 }
 
 std::wstring Utf8ToWide(const std::string& value)
@@ -841,6 +959,7 @@ struct NativeAudioController::Impl
         std::wstring name;
         std::wstring endpointId;
         std::uint32_t channelColor = AudioStripState::NoChannelColor;
+        std::vector<AudioMeterRole> meterRoles;
         std::vector<Session> sessions;
         ComPtr<IMMDevice> endpointDevice;
         ComPtr<IAudioEndpointVolume> endpointVolume;
@@ -859,6 +978,7 @@ struct NativeAudioController::Impl
     ComPtr<IAudioSessionManager2> manager;
     ComPtr<IMMNotificationClient> endpointNotifications;
     std::wstring sessionEndpointId;
+    std::vector<AudioMeterRole> sessionMeterRoles;
     std::wstring endpointDiagnosticSignature;
     std::array<Slot, StripCount> slots;
     std::array<unsigned long long, StripCount> appliedVolumeVersions{};
@@ -1062,6 +1182,9 @@ struct NativeAudioController::Impl
         }
         endpoint = std::move(current);
         sessionEndpointId = currentId;
+        sessionMeterRoles = EndpointMeterRoles(endpoint.Get());
+        FB_TRACE("SESSION_METER_FORMAT channels=%u",
+            static_cast<unsigned>(sessionMeterRoles.size()));
         return true;
     }
 
@@ -1231,6 +1354,7 @@ struct NativeAudioController::Impl
             std::wstring id;
             std::wstring name;
             bool isDefault = false;
+            std::vector<AudioMeterRole> meterRoles;
             ComPtr<IMMDevice> device;
             ComPtr<IAudioEndpointVolume> volume;
             ComPtr<IAudioMeterInformation> meter;
@@ -1307,6 +1431,7 @@ struct NativeAudioController::Impl
             description.id = id;
             description.name = std::move(name);
             description.isDefault = flow == eRender ? id == defaultRender : id == defaultCapture;
+            description.meterRoles = EndpointMeterRoles(device.Get());
             description.device = std::move(device);
             description.volume = std::move(volume);
             description.meter = std::move(meter);
@@ -1329,6 +1454,7 @@ struct NativeAudioController::Impl
             slot.kind = source.kind;
             slot.name = source.name;
             slot.isDefault = source.isDefault;
+            slot.meterRoles = source.meterRoles;
             EnsureCaptureMeterStream(slot);
             // Preserve the established endpoint interfaces across polling
             // passes. Re-activating them every 500 ms creates avoidable COM
@@ -1349,6 +1475,7 @@ struct NativeAudioController::Impl
             empty->channelColor = source.kind == SlotKind::RenderEndpoint
                 ? 0x003E9BFFU : 0x0034C98FU;
             empty->isDefault = source.isDefault;
+            empty->meterRoles = std::move(source.meterRoles);
             empty->endpointDevice = std::move(source.device);
             empty->endpointVolume = std::move(source.volume);
             empty->endpointMeter = std::move(source.meter);
@@ -1646,7 +1773,6 @@ struct NativeAudioController::Impl
                 {
                     float volume = 0.0F;
                     BOOL muted = FALSE;
-                    float peak = 0.0F;
                     if (slot.kind == SlotKind::CaptureEndpoint)
                     {
                         DrainCaptureMeterStream(slot);
@@ -1659,11 +1785,19 @@ struct NativeAudioController::Impl
                     {
                         strip.muted = muted != FALSE;
                     }
-                    if (slot.endpointMeter)
+                    std::vector<float> peaks;
+                    MergeMeterPeaks(slot.endpointMeter.Get(), peaks);
+                    strip.meterDb.reserve(peaks.size());
+                    for (const auto peak : peaks)
                     {
-                        slot.endpointMeter->GetPeakValue(&peak);
+                        strip.meterDb.push_back(PeakToDb(peak));
                     }
-                    strip.peakDb = PeakToDb(peak);
+                    strip.meterRoles = slot.meterRoles.size() >= strip.meterDb.size()
+                        ? std::vector<AudioMeterRole>(slot.meterRoles.begin(),
+                            slot.meterRoles.begin() + strip.meterDb.size())
+                        : DefaultMeterRoles(static_cast<UINT>(strip.meterDb.size()));
+                    strip.peakDb = strip.meterDb.empty() ? -120.0F :
+                        *std::max_element(strip.meterDb.begin(), strip.meterDb.end());
                     frame->strips.push_back(std::move(strip));
                     continue;
                 }
@@ -1680,7 +1814,7 @@ struct NativeAudioController::Impl
                 observations.reserve(slot.sessions.size());
                 int changedSession = -1;
                 int changedMuteSession = -1;
-                float peak = 0.0F;
+                std::vector<float> peaks;
 
                 for (auto& session : slot.sessions)
                 {
@@ -1719,12 +1853,7 @@ struct NativeAudioController::Impl
                         session.lastObservedMute = observation.muted;
                         session.muteObserved = true;
                     }
-                    float sessionPeak = 0.0F;
-                    if (session.meter)
-                    {
-                        session.meter->GetPeakValue(&sessionPeak);
-                        peak = std::max(peak, sessionPeak);
-                    }
+                    MergeMeterPeaks(session.meter.Get(), peaks);
                     observations.push_back(observation);
                 }
 
@@ -1812,7 +1941,17 @@ struct NativeAudioController::Impl
                 {
                     strip.muted = selectedMute->muted;
                 }
-                strip.peakDb = PeakToDb(peak);
+                strip.meterDb.reserve(peaks.size());
+                for (const auto peak : peaks)
+                {
+                    strip.meterDb.push_back(PeakToDb(peak));
+                }
+                strip.meterRoles = sessionMeterRoles.size() >= strip.meterDb.size()
+                    ? std::vector<AudioMeterRole>(sessionMeterRoles.begin(),
+                        sessionMeterRoles.begin() + strip.meterDb.size())
+                    : DefaultMeterRoles(static_cast<UINT>(strip.meterDb.size()));
+                strip.peakDb = strip.meterDb.empty() ? -120.0F :
+                    *std::max_element(strip.meterDb.begin(), strip.meterDb.end());
             }
             frame->strips.push_back(std::move(strip));
         }

@@ -37,6 +37,26 @@ float NormalizedToCoordinate(const float value)
 {
     return kMinDb + (std::clamp(value, 0.0F, 1.0F) * (kMaxDb - kMinDb));
 }
+
+tFORMAT TrackFormatForMeterRoles(const std::vector<NEuCon::uint32>& roles)
+{
+    const auto hasLfe = std::find(roles.begin(), roles.end(),
+        static_cast<NEuCon::uint32>(kMTR_LFE)) != roles.end();
+    switch (roles.size())
+    {
+    case 1U: return kFORMAT_Mono;
+    case 2U: return kFORMAT_Stereo;
+    case 3U: return hasLfe ? kFORMAT_2dot1 : kFORMAT_LCR;
+    case 4U: return kFORMAT_Quad;
+    case 5U: return kFORMAT_5dot0;
+    case 6U: return kFORMAT_5dot1;
+    case 7U: return hasLfe ? kFORMAT_6dot1 : kFORMAT_7dot0DTS;
+    case 8U: return kFORMAT_7dot1DTS;
+    case 9U: return hasLfe ? kFORMAT_Unknown : kFORMAT_7dot0dot2;
+    case 10U: return hasLfe ? kFORMAT_7dot1dot2 : kFORMAT_Unknown;
+    default: return kFORMAT_Unknown;
+    }
+}
 }
 
 EuconChannel::EuconChannel(const int channelOrder, const NEuCon::int32 channelColor,
@@ -404,22 +424,53 @@ void EuconChannel::SetTrackMetadata(const NEuCon::int32 trackType,
     SetAttribute2(kATRIBID_ChannelType, channelType, true);
 }
 
-void EuconChannel::PostRegisterMeterInitialization()
+void EuconChannel::PostRegisterMeterInitialization(const bool forceMono,
+    const std::vector<NEuCon::uint32>& roles)
 {
     const auto meterTypeResult = meter_.SetAttribute2(
         kATRIBID_MeterType, kMeterType__SamplePeak, true);
     const auto processorMeterTypeResult = SetAttribute2(
         kATRIBID_MeterType, kMeterType__SamplePeak, true);
-    const auto trackFormatResult = SetAttribute2(kATRIBID_TrackFormat, kFORMAT_Stereo, true);
+    ConfigureMeter(forceMono, roles);
+    FB_TRACE("METER_SETUP track=%d meterType=%d processorType=%d",
+        channelOrder_.load(), static_cast<int>(meterTypeResult),
+        static_cast<int>(processorMeterTypeResult));
+}
 
+void EuconChannel::ConfigureMeter(const bool forceMono,
+    const std::vector<NEuCon::uint32>& sourceRoles)
+{
+    std::vector<NEuCon::uint32> roles = forceMono
+        ? std::vector<NEuCon::uint32>{ kMTR_Mono } : sourceRoles;
+    if (roles.empty())
+    {
+        roles.push_back(kMTR_Mono);
+    }
+    if (roles.size() > kEuMaxLegsPerMeter_3_1_API)
+    {
+        roles.resize(kEuMaxLegsPerMeter_3_1_API);
+    }
+    if (meterConfigured_ && roles == configuredMeterRoles_)
+    {
+        return;
+    }
+
+    const auto trackFormat = TrackFormatForMeterRoles(roles);
+    const auto trackFormatResult = SetAttribute2(kATRIBID_TrackFormat, trackFormat, true);
     const auto flags = static_cast<NEuCon::uint32>(
         kEuMFMT_PL_Level | kEuMFMT_PL_Peak | kEuMFMT_PL_Clip |
         kEuMFMT_PM_MasterPeak | kEuMFMT_PM_MasterClip);
     const auto formatResult = meter_.SetFormat(
-        EuMakeMeterFormat(2U, flags), { kMTR_Left, kMTR_Right });
-    FB_TRACE("METER_SETUP track=%d meterType=%d processorType=%d trackFormat=%d format=%d",
-        channelOrder_.load(), static_cast<int>(meterTypeResult),
-        static_cast<int>(processorMeterTypeResult), static_cast<int>(trackFormatResult),
+        EuMakeMeterFormat(static_cast<NEuCon::uint32>(roles.size()), flags), roles);
+    if (formatResult == kERR_OK)
+    {
+        configuredMeterRoles_ = std::move(roles);
+        meterConfigured_ = true;
+    }
+    FB_TRACE("METER_FORMAT track=%d mono=%d legs=%u trackFormat=%d trackResult=%d formatResult=%d",
+        channelOrder_.load(), forceMono ? 1 : 0,
+        static_cast<unsigned>(configuredMeterRoles_.size()),
+        static_cast<int>(trackFormat), static_cast<int>(trackFormatResult),
         static_cast<int>(formatResult));
 }
 
@@ -437,7 +488,8 @@ void EuconChannel::SetMeterVisibility(const bool visible, const tVisibilityHandl
         static_cast<unsigned>(format));
 }
 
-void EuconChannel::WriteMeterDb(EuBatchedMeterWriter& writer, const float valueDb, const bool clip)
+void EuconChannel::WriteMeterDb(EuBatchedMeterWriter& writer,
+    const std::vector<float>& valuesDb)
 {
     tVisibilityHandle handle = kEuInvalidVisibilityHandle;
     tEuMeterFormat format = kEuInvalidMeterFormat;
@@ -463,32 +515,49 @@ void EuconChannel::WriteMeterDb(EuBatchedMeterWriter& writer, const float valueD
         // The legacy write is an isolated compatibility fallback while the
         // missing visibility callback is being investigated. It is never sent
         // alongside a valid 3.1 batched meter update.
+        const auto masterLevel = valuesDb.empty() ? -120.0F :
+            *std::max_element(valuesDb.begin(), valuesDb.end());
         EuPrimitiveControl* primitive = nullptr;
         if (meter_.GetPrimitive(EuControlMultiMeter::kID_Meter0, &primitive) == kERR_OK &&
             primitive)
         {
-            primitive->SetCurrentValue(std::clamp(valueDb, -120.0F, 0.0F));
+            primitive->SetCurrentValue(std::clamp(masterLevel, -120.0F, 0.0F));
             primitive->Refresh();
         }
         return;
     }
 
-    const auto level = std::clamp(valueDb, -120.0F, 12.0F);
-    const auto peak = level + 2.0F;
-    const auto meterResult = writer.SetPerMeterValuesV2(meter_, handle, format, peak, clip);
-    const auto leftResult = writer.SetPerLegValuesV2(meter_, handle, format, 0U,
-        level, peak, kMeter_DefaultValueForContext, clip);
-    const auto rightResult = writer.SetPerLegValuesV2(meter_, handle, format, 1U,
-        level, peak, kMeter_DefaultValueForContext, clip);
-    const auto combinedResult = meterResult != kEUBMR_OK ? meterResult
-        : leftResult != kEUBMR_OK ? leftResult : rightResult;
+    const auto masterLevel = valuesDb.empty() ? -120.0F :
+        *std::max_element(valuesDb.begin(), valuesDb.end());
+    const auto masterClip = masterLevel >= -0.01F;
+    auto combinedResult = writer.SetPerMeterValuesV2(meter_, handle, format,
+        masterLevel, masterClip);
+    const auto legCount = EuMeterFormatNumLegs(format);
+    for (NEuCon::uint32 leg = 0U; leg < legCount; ++leg)
+    {
+        float level = -120.0F;
+        if (legCount == 1U)
+        {
+            level = masterLevel;
+        }
+        else if (leg < valuesDb.size())
+        {
+            level = valuesDb[leg];
+        }
+        level = std::clamp(level, -120.0F, 0.0F);
+        const auto legResult = writer.SetPerLegValuesV2(meter_, handle, format, leg,
+            level, level, kMeter_DefaultValueForContext, level >= -0.01F);
+        if (combinedResult == kEUBMR_OK && legResult != kEUBMR_OK)
+        {
+            combinedResult = legResult;
+        }
+    }
     if (lastMeterResult_.exchange(static_cast<int>(combinedResult)) !=
         static_cast<int>(combinedResult))
     {
-        FB_TRACE("METER_BATCH track=%d result=%d meter=%d left=%d right=%d handle=%u format=%u",
+        FB_TRACE("METER_BATCH track=%d result=%d legs=%u handle=%u format=%u",
             channelOrder_.load(), static_cast<int>(combinedResult),
-            static_cast<int>(meterResult), static_cast<int>(leftResult),
-            static_cast<int>(rightResult), static_cast<unsigned>(handle),
+            static_cast<unsigned>(legCount), static_cast<unsigned>(handle),
             static_cast<unsigned>(format));
     }
 }

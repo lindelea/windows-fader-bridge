@@ -172,6 +172,28 @@ On 2026-08-29, the user verified channel Solo, direct intercancel switching,
 same-channel restore, Clear Solo, mute restoration, and LED feedback on the
 attached EUCON setup. A wider surface regression matrix remains desirable.
 
+## True per-leg metering and mono format
+
+Meter API 3.1 is the primary meter path. Each live track declares its current
+format with `EuControlMultiMeter::SetFormat()` after Processor registration.
+The adapter saves the format and visibility handle supplied by
+`VisibilityChangedV2`, then writes only visible meters through one
+`EuBatchedMeterWriter` per update cycle.
+
+Windows session and endpoint meters are read per channel. Endpoint mix-format
+channel masks are translated to the corresponding EUCON meter roles, and
+multiple Windows sessions belonging to one logical application are combined by
+taking the maximum value for each leg. When Windows mono audio is enabled, each
+track is re-declared as one `kMTR_Mono` leg and sends the maximum source level;
+when mono is disabled, the real channel roles and leg count are restored.
+
+On 2026-08-29, dynamically registered tracks received valid Meter API 3.1
+visibility handles in the attached EuControl setup and every observed batched
+write returned success. The user verified true multi-leg meters and the dynamic
+stereo/mono display. The ordinary primitive write remains an isolated startup
+fallback for the interval in which a track has no valid visibility handle; it
+is not the application model.
+
 ## Current conformance audit
 
 | Area | Status | Notes |
@@ -188,7 +210,7 @@ attached EUCON setup. A wider surface regression matrix remains desirable.
 | Windows mono command | Verified on S3 | A standards-based assignable command queues the Windows setting handler and Windows state owns its LED. Clear Solo press/LED and real mono processing were verified; Mix to Mons is fixed and unavailable for assignment. Avid Control remains to be tested. |
 | Application Solo / Clear Solo | Verified | Application channels use standard Solo semantics; the Windows worker performs single-target intercancel muting and restores the pre-Solo mute snapshot. The standard System Clear Solo and an assignable command share authoritative state and LED feedback. Endpoint channels are excluded. |
 | Volume knob semantics | Needs work | Volume currently borrows the predefined Input knob-set layout. Confirm the correct standard model or use an official knob-map strategy. |
-| Meter API 3.1 | Needs investigation | Setup calls return `kERR_OK`, but dynamically registered tracks did not receive the documented `VisibilityChangedV2` callback in the verified EuControl setup. The adapter now trusts callback state instead of querying/inventing visibility and uses an isolated, verified legacy write only while no valid 3.1 handle exists. |
+| Meter API 3.1 | Verified | Windows supplies true per-leg peaks and endpoint channel roles. Tracks declare dynamic stereo/mono formats, save `VisibilityChangedV2` handles, and use `EuBatchedMeterWriter`; observed batched calls returned success. The ordinary write is isolated to startup/no-handle compatibility. |
 | Device-derived behavior | Needs review | Forced refresh and overtravel rebound came from hardware testing. Classify them as generic application policy or remove them after cross-surface tests. |
 | Optional global processors | Partially conformant | The single System Processor now exposes documented Clear Solo semantics. Add Project, Monitor, Transport, or Assignable Knob only when Windows supplies a matching standard concept. |
 
@@ -210,8 +232,9 @@ attached EUCON setup. A wider surface regression matrix remains desirable.
    current installed header contracts; use official examples only as supporting
    evidence.
 3. Move remaining SDK output out of callback threads.
-4. Instrument meter negotiation and retire the ordinary fallback only when the
-   documented Meter API 3.1 path is reliable on all attached test surfaces.
+4. Verify Meter API 3.1 negotiation on additional surface/runtime combinations,
+   then retire the ordinary startup fallback when no supported setup requires
+   it.
 5. Run the same regression matrix on S3 and Avid Control: discovery, banking,
    assignment/layout recall, fader/touch/motor, encoder/touch/ring, mute/LED,
    labels, and peak meters.

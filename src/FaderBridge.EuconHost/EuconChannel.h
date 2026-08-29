@@ -13,6 +13,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <vector>
 
 class EuBatchedMeterWriter;
 
@@ -40,9 +41,12 @@ public:
     void SetSoloed(bool soloed);
     void SetRecordArmed(bool armed);
     void SetTrackMetadata(NEuCon::int32 trackType, const std::wstring& channelType);
-    void PostRegisterMeterInitialization();
+    void PostRegisterMeterInitialization(bool forceMono,
+        const std::vector<NEuCon::uint32>& roles);
+    void ConfigureMeter(bool forceMono, const std::vector<NEuCon::uint32>& roles);
     void SetMeterVisibility(bool visible, tVisibilityHandle handle, tEuMeterFormat format);
-    void WriteMeterDb(EuBatchedMeterWriter& writer, float valueDb, bool clip);
+    void WriteMeterDb(EuBatchedMeterWriter& writer,
+        const std::vector<float>& valuesDb);
 
     void OnPrimitiveCallback(tEVT eventType, NEuCon::uint32 eventFlags,
         NEuCon::uint32 controlId, NEuCon::uint32 arrayMemberControlId,
@@ -94,4 +98,6 @@ private:
     bool meterVisible_ = false;
     tVisibilityHandle meterVisibilityHandle_ = kEuInvalidVisibilityHandle;
     tEuMeterFormat meterFormat_ = kEuInvalidMeterFormat;
+    std::vector<NEuCon::uint32> configuredMeterRoles_;
+    bool meterConfigured_ = false;
 };

@@ -19,9 +19,33 @@ enum class AudioStripRole
     InputDevice,
 };
 
+enum class AudioMeterRole
+{
+    Mono,
+    Left,
+    Right,
+    Center,
+    Lfe,
+    LeftSurround,
+    RightSurround,
+    LeftBackSurround,
+    RightBackSurround,
+    CenterSurround,
+    LeftCenter,
+    RightCenter,
+    Top,
+    HeightLeftFront,
+    HeightCenterFront,
+    HeightRightFront,
+    HeightLeftSurround,
+    HeightCenterSurround,
+    HeightRightSurround,
+};
+
 struct AudioStripState
 {
     static constexpr std::uint32_t NoChannelColor = 0xFFFFFFFFU;
+    static constexpr std::size_t MaxMeterChannels = 16U;
 
     int slot = 0;
     int sortGroup = 2;
@@ -33,6 +57,8 @@ struct AudioStripState
     bool soloed = false;
     float volume = 0.0F;
     float peakDb = -120.0F;
+    std::vector<float> meterDb;
+    std::vector<AudioMeterRole> meterRoles;
     std::uint32_t channelColor = NoChannelColor;
     std::wstring key;
     std::wstring name;
