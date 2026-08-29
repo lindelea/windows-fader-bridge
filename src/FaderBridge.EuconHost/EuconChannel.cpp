@@ -313,7 +313,8 @@ void EuconChannel::InitializeSolo()
 
 void EuconChannel::InitializeSelect()
 {
-    // Getting Started with EuCon 12.5 and the current EuConApp pattern:
+    // The documented channel-layout contract places Select at this standard
+    // channel role:
     // channel Select is a standard two-state MultiState switch. Windows has
     // one foreground application, so the host applies an intercancel policy
     // and sends the authoritative state back after each surface press.
@@ -659,8 +660,8 @@ void EuconChannel::InitializeRouteKnobSets()
 
 void EuconChannel::InitializeTopLevelKnobSet()
 {
-    // Getting Started with EUCON section 8.2.7 and the current EuConApp
-    // implementation: expose a real hierarchy instead of relying on a
+    // The documented EUCON knob-set hierarchy requires a real top-level
+    // container instead of relying on a
     // surface-generated top page. This lets EuControl/WSControl map the same
     // application model to any compatible surface.
     topLevelKnobSet_.SetId(TopLevelKnobSetId);

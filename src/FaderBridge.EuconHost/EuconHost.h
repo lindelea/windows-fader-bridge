@@ -17,6 +17,7 @@ class WindowsSystemProcessor;
 
 constexpr UINT kSurfaceChangeMessage = WM_APP + 1;
 constexpr UINT kAudioFrameMessage = WM_APP + 2;
+constexpr UINT kWindowsCommandMessage = WM_APP + 3;
 constexpr UINT_PTR kMotorFlushTimerId = 0x4642U;
 
 struct SurfaceChange

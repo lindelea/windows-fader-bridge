@@ -173,6 +173,32 @@ toggle after an external command even though the handler value and audio engine
 have changed; this is treated as a Windows UI-cache limitation, not audio state.
 Avid Control command placement and feedback remain to be verified.
 
+## Assignable Windows command catalog
+
+The command processor now follows the complete documented three-level model:
+
+```text
+Key Commands -> category switch array -> one-shot command switch
+```
+
+The existing `Windows Audio` persistence IDs remain unchanged. Thirteen additional
+categories publish 184 Windows commands, for 186 assignable commands in total.
+Every category and command has an explicit globally unique, versioned
+persistence ID. These IDs are independent of display names and must never be
+renamed after release because EuControl stores them in user application sets.
+
+Stateless commands use the SDK's documented `kSWITCH_OneShot` behavior and let
+the switch own its momentary LED. Mono Audio and Clear Solo remain
+application-owned LEDs because they reflect authoritative Windows state. The
+EUCON callback performs no Windows operation: it posts a typed command to the
+Win32 application thread, which invokes the corresponding Shell API, official
+`ms-settings:` URI, Known Folder API, foreground-window API, or `SendInput`
+shortcut.
+
+The catalog deliberately omits shutdown, reboot, sign-out, file deletion,
+formatting, service mutation, and other high-impact actions. See
+`WINDOWS_COMMANDS.md` for the category inventory and execution contract.
+
 ## Application Solo and Clear Solo
 
 Application tracks expose the standard `EuLayoutChannel::kNAM_Solo` switch as
@@ -211,7 +237,7 @@ Stereo application sessions expose a dedicated predefined Pan knob set using
 `EuLayoutChannel::kNAM_Pan` and the standard `Avid.Chan.Pan` function
 persistence ID. The knob-cell array follows the documented
 `Freeze()` / `PushBack()` / `Thaw()` lifecycle, and its centered position ring
-and `-100..+100` table follow the official EuConApp Pan example. Surface
+and `-100..+100` table implement the documented EUCON pan semantics. Surface
 callbacks only publish the stable track identity and requested value; the Core
 Audio worker owns all Windows writes.
 
@@ -318,10 +344,12 @@ regression-tested for this workflow.
 | Track identity and ordering | Verified | Channel Processors are keyed by stable application identity. Mutable atomic routes target the current Core Audio slot; reordering retains the Processor and changes only `ChannelOrder` and channel number as specified by guide section 12.4. Verified smooth and near-zero-latency on the attached S3/Avid Control setup. |
 | Default endpoint selection | Verified | Active render/capture endpoints retain stable Processor identity. Rec is a one-shot request, Windows default state owns its LED, and Console/Multimedia/Communications roles switch together. Capture selection and reverse synchronization were verified on Windows 11 with S3. |
 | Windows mono command | Verified on S3 | A standards-based assignable command queues the Windows setting handler and Windows state owns its LED. Clear Solo press/LED and real mono processing were verified; Mix to Mons is fixed and unavailable for assignment. Avid Control remains to be tested. |
+| Assignable Windows commands | Awaiting surface verification | The single documented Key Commands processor exposes 14 stable categories and 186 commands. EUCON callbacks post typed work to the Win32 owner thread. SDK initialization returned no errors; Settings URI, system executable, Known Folder, and general SendInput paths passed local tests. File Explorer, taskbar, input-language assignment and invocation, plus labels and momentary LEDs, remain to be verified on S3 and Avid Control. |
 | Application Solo / Clear Solo | Verified | Application channels use standard Solo semantics; the Windows worker performs single-target intercancel muting and restores the pre-Solo mute snapshot. The standard System Clear Solo and an assignable command share authoritative state and LED feedback. Endpoint channels are excluded. |
 | Select / Attention | Verified on S3 | Standard channel Select drives one-of-N Windows application activation; off minimizes the selected application. Surface-owned AttentionedTrackPID is consumed on the UI thread. PID, package-family, and executable matching cover helper/worker processes without device-specific code. |
 | Application and output Pan / balance | Verified on S3 | Stereo application sessions use independent `IChannelAudioVolume` factors; stereo render endpoints use absolute `IAudioEndpointVolume` channel scalars capped by Master. Both expose the predefined Pan knob set and knob-top Center reset. Capture and non-stereo tracks are excluded. Avid Control remains to be tested. |
 | Application custom knob sets | Awaiting hardware verification | Custom pages 9/11/13 expose Media, Quick Controls, and Window operations. Media cells are generated from each GSMTC session's advertised read/write capabilities using the documented knob-array `Freeze` / `Remove` / `PushBack` / `Thaw` lifecycle. A readable but non-seekable timeline is retained as a read-only position cell; unsupported actions are absent. Metadata is fetched asynchronously and published as title/artist label cells. Session matching prefers the Windows current session and then active playback among identity-matched sessions; no unrelated global-session fallback is allowed. |
+| Desktop application shell | Locally verified | `WindowsFaderBridge.exe` is a per-monitor-DPI-aware, single-instance native tray application. The status window is optional UI around the process-lifetime EUCON node: close/hide does not destroy the adapter, while explicit tray Exit does. Per-user startup uses the standard HKCU Run value with `--background`; no service, elevation, driver, or scheduled task is introduced. |
 | Volume knob semantics | Needs work | Volume currently borrows the predefined Input knob-set layout. Confirm the correct standard model or use an official knob-map strategy. |
 | Meter API 3.1 | Verified | Windows supplies true per-leg peaks and endpoint channel roles. Tracks declare dynamic stereo/mono formats, save `VisibilityChangedV2` handles, and use `EuBatchedMeterWriter`; observed batched calls returned success. The ordinary write is isolated to startup/no-handle compatibility. |
 | Device-derived behavior | Needs review | Forced refresh and overtravel rebound came from hardware testing. Classify them as generic application policy or remove them after cross-surface tests. |

@@ -27,24 +27,24 @@ Never implement EUCON behavior from memory, analogy, trial-and-error, or a
 single observed device result. Consult sources in this order:
 
 1. Avid EUCON SDK 2026.4 official guide:
-   `C:\Users\jwu\Documents\Avid\EUCON SDK\GettingStartedWithEuCon.pdf`
+   `%USERPROFILE%\Documents\Avid\EUCON SDK\GettingStartedWithEuCon.pdf`
 2. Installed SDK declarations and inline API contracts:
    `C:\Program Files\Avid\EUCON SDK\include`
    - start with `EuDefinitions.h`, `EuNode.h`, `EuCommon.h`, and the exact
      `EuControl*`, `EuPrimitive*`, or `EuBatchedMeter*` header in use;
 3. Official basic adapter example:
-   `C:\Users\jwu\Documents\Avid\EUCON SDK\EuConIO`
+   `%USERPROFILE%\Documents\Avid\EUCON SDK\EuConIO`
 4. Official advanced adapter example:
-   `C:\Users\jwu\Documents\Avid\EUCON SDK\EuConApp`
+   `%USERPROFILE%\Documents\Avid\EUCON SDK\EuConApp`
 5. Focused official examples:
-   `C:\Users\jwu\Documents\Avid\EUCON SDK\FAQ Code Examples`
+   `%USERPROFILE%\Documents\Avid\EUCON SDK\FAQ Code Examples`
    - especially `ChannelVisibility.cpp`, `MeterExample.cpp`,
      `PersistentPayloadExample.cpp`, `KnobByDeltaExample.cpp`, and
      `AutomationExample.cpp` when relevant;
 6. Official color-grading example only for applicable controls:
-   `C:\Users\jwu\Documents\Avid\EUCON SDK\EuConColor`
+   `%USERPROFILE%\Documents\Avid\EUCON SDK\EuConColor`
 7. Waveform Link documentation only for waveform work:
-   `C:\Users\jwu\Documents\Avid\EUCON SDK\WaveformLink Documentation.pdf`
+   `%USERPROFILE%\Documents\Avid\EUCON SDK\WaveformLink Documentation.pdf`
 8. Repository design and verified findings:
    - `docs/EUCON_ARCHITECTURE.md`
    - `docs/eucon-s3-hardware-baseline.md`
@@ -57,9 +57,9 @@ or API call pattern, never to invent behavior that the guide and headers do not
 define. If an example is older than the installed header contract, follow the
 current non-deprecated API unless the guide explicitly requires otherwise.
 
-The repository copy under `src/FaderBridge.EuConApp` is licensed Avid example
-material and a hardware research baseline. Do not treat local experimental
-changes as more authoritative than the pristine installed examples.
+All Avid documentation, examples, headers, libraries and installers must remain
+outside this repository. Consult only a separately obtained local SDK copy and
+never copy its contents into a change or commit.
 
 ## Required workflow for EUCON changes
 
@@ -153,12 +153,6 @@ Build the native adapter with:
 .\scripts\build-eucon.ps1
 ```
 
-Build the official EuConApp hardware reference with:
-
-```powershell
-.\scripts\build-euconapp-baseline.ps1
-```
-
 Run only one processor-side EUCON test application at a time. Do not modify or
 restart EuControl, MC_Client, WSControl, drivers, firmware, or surface settings
 unless the user explicitly authorizes that operation.
@@ -181,10 +175,11 @@ For model-affecting changes, verify at minimum:
 
 - Preserve unrelated user changes and keep experimental work out of verified
   commits.
-- Do not commit SDK installers, binaries, build artifacts, logs, dumps, or
-  licensed material not already intentionally tracked.
-- Keep the repository private while it contains Avid SDK-derived source.
-- Do not redistribute Avid example source or documentation without confirming
-  the SDK license.
+- Do not commit SDK installers, binaries, build artifacts, logs, dumps,
+  decompiled material, or third-party licensed material.
+- Never commit or redistribute Avid SDK headers, libraries, examples,
+  documentation, installers, or copied fragments. The repository contains only
+  project-owned implementation and links to official acquisition sources.
+- Keep private research and licensed reference material outside the repository.
 - A hardware observation becomes a rule only after it is reconciled with the
   official model and verified across the available surface matrix.

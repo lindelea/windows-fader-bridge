@@ -1,281 +1,100 @@
-#include <Windows.h>
-
-#include "EuconHost.h"
+#include "ApplicationShell.h"
 #include "DiagnosticLog.h"
 
+#include <Windows.h>
+#include <shellapi.h>
+#include <shobjidl.h>
 #include <winrt/base.h>
 
-#include <algorithm>
-#include <array>
-#include <cmath>
-#include <iomanip>
-#include <memory>
-#include <sstream>
-#include <string>
-#include <vector>
+#include <cwchar>
+#include <string_view>
 
 namespace
 {
-constexpr wchar_t kWindowClass[] = L"FaderBridgeEuconWindow";
-std::unique_ptr<EuconHost> g_host;
-std::array<AudioStripState, EuconHost::MaxChannelCount> g_strips{};
-int g_activeCount = -1;
-int g_lastChannel = -1;
-int g_lastKind = 0;
-float g_lastValue = 0.0F;
-NEuCon::uint16 g_lastRawIndex = 0U;
-float g_lastRawTableValue = 0.0F;
-bool g_lastCommandSent = false;
-bool g_monoAudioEnabled = false;
+constexpr wchar_t kWindowClass[] = L"WindowsFaderBridge.MainWindow";
+constexpr wchar_t kSingleInstanceName[] =
+    L"Local\\Lindelea.WindowsFaderBridge.2026";
 
-const wchar_t* ChangeKindName(const int kind)
+bool HasArgument(const wchar_t* expected)
 {
-    switch (kind)
+    int count = 0;
+    auto** arguments = CommandLineToArgvW(GetCommandLineW(), &count);
+    if (!arguments) return false;
+    bool found = false;
+    for (int index = 1; index < count; ++index)
     {
-    case 0: return L"Fader";
-    case 1: return L"Knob";
-    case 2: return L"Mute";
-    case 3: return L"Default device";
-    case 4: return L"Solo";
-    case 5: return L"Select";
-    case 6: return L"Attention";
-    case 7: return L"Pan";
-    case 8: return L"Pan center";
-    default: return L"Unknown";
+        if (std::wstring_view(arguments[index]) == expected)
+        {
+            found = true;
+            break;
+        }
     }
+    LocalFree(arguments);
+    return found;
 }
 
-void PaintWindow(const HWND window)
+DWORD RestartSourceProcessId()
 {
-    PAINTSTRUCT paint{};
-    const auto dc = BeginPaint(window, &paint);
-    RECT client{};
-    GetClientRect(window, &client);
-    FillRect(dc, &client, reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1));
-    SelectObject(dc, GetStockObject(DEFAULT_GUI_FONT));
-    SetBkMode(dc, TRANSPARENT);
-
-    std::wostringstream text;
-    text << L"Windows audio channels (linear 0–100% mapping)\r\n\r\n";
-    text << L"Mono audio: " << (g_monoAudioEnabled ? L"ON" : L"off") << L"\r\n\r\n";
-    text << std::fixed << std::setprecision(0);
-    std::vector<const AudioStripState*> visibleStrips;
-    for (const auto& strip : g_strips)
+    int count = 0;
+    auto** arguments = CommandLineToArgvW(GetCommandLineW(), &count);
+    if (!arguments) return 0;
+    DWORD processId = 0;
+    for (int index = 1; index + 1 < count; ++index)
     {
-        if (strip.active)
+        if (std::wstring_view(arguments[index]) == L"--restart-from")
         {
-            visibleStrips.push_back(&strip);
+            wchar_t* end = nullptr;
+            const auto parsed = std::wcstoul(arguments[index + 1], &end, 10);
+            if (end && *end == L'\0') processId = static_cast<DWORD>(parsed);
+            break;
         }
     }
-    std::stable_sort(visibleStrips.begin(), visibleStrips.end(), [](const auto* left,
-        const auto* right)
-    {
-        return left->sortGroup != right->sortGroup
-            ? left->sortGroup < right->sortGroup
-            : left->name < right->name;
-    });
-    for (size_t index = 0; index < visibleStrips.size(); ++index)
-    {
-        const auto& strip = *visibleStrips[index];
-        text << L"CH" << std::setw(2) << (index + 1U) << L"  "
-             << std::left << std::setw(30) << strip.name.substr(0, 29) << std::right
-             << std::setw(4) << (strip.volume * 100.0F) << L"%  "
-             << (strip.muted ? L"MUTE" : L"    ");
-        if (strip.panAvailable)
-        {
-            const auto panPercent = static_cast<int>(std::lround(std::fabs(strip.pan) * 100.0F));
-            text << L"  PAN " << (strip.pan < -0.005F ? L"L" :
-                strip.pan > 0.005F ? L"R" : L"C") << std::setw(3) <<
-                (panPercent == 0 ? 0 : panPercent);
-        }
-        if (strip.defaultSelectable)
-        {
-            text << (strip.isDefault ? L"  REC/default" : L"  REC/select");
-        }
-        text << L"\r\n";
-    }
-    if (visibleStrips.empty())
-    {
-        text << L"No active Windows audio applications.\r\n";
-    }
-
-    text << L"\r\n";
-    if (g_lastChannel >= 0)
-    {
-        text << L"Last EUCON surface: CH" << (g_lastChannel + 1) << L" "
-             << ChangeKindName(g_lastKind) << L"    raw index " << g_lastRawIndex
-             << L"    table value ";
-        if (g_lastKind >= 2 && g_lastKind <= 6)
-        {
-            text << (g_lastRawTableValue == 0.0F ? L"Off" : L"On");
-        }
-        else if (g_lastKind == 7 || g_lastKind == 8)
-        {
-            text << static_cast<int>(std::lround(g_lastRawTableValue)) << L"%";
-        }
-        else
-        {
-            text << static_cast<int>(std::lround(g_lastRawTableValue * 100.0F));
-        }
-        text << L"\r\nMapped Windows command: "
-             << static_cast<int>(std::lround(g_lastValue * 100.0F)) << L"%"
-             << L"    write: " << (g_lastCommandSent ? L"OK" : L"not connected");
-    }
-
-    auto value = text.str();
-    InflateRect(&client, -16, -14);
-    DrawTextW(dc, value.c_str(), static_cast<int>(value.size()), &client,
-        DT_LEFT | DT_TOP | DT_NOPREFIX);
-    EndPaint(window, &paint);
+    LocalFree(arguments);
+    return processId;
 }
 
-LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
+void WaitForRestartSource()
 {
-    switch (message)
+    const auto processId = RestartSourceProcessId();
+    if (processId == 0 || processId == GetCurrentProcessId()) return;
+    const auto process = OpenProcess(SYNCHRONIZE, FALSE, processId);
+    if (!process) return;
+    WaitForSingleObject(process, 15000U);
+    CloseHandle(process);
+}
+
+void ActivateExistingInstance()
+{
+    if (const auto window = FindWindowW(kWindowClass, nullptr))
     {
-    case WM_CREATE:
-        g_host = std::make_unique<EuconHost>(window);
-        if (g_host->IsReady())
-        {
-            SetWindowTextW(window, L"FaderBridge EUCON — connecting Windows audio…");
-        }
-        else
-        {
-            const auto title = L"FaderBridge EUCON initialization failed: " +
-                std::to_wstring(g_host->InitializationError());
-            SetWindowTextW(window, title.c_str());
-        }
-        return 0;
-
-    case kSurfaceChangeMessage:
-    {
-        std::unique_ptr<SurfaceChange> change(reinterpret_cast<SurfaceChange*>(lParam));
-        if (!g_host || !change)
-        {
-            return 0;
-        }
-        g_lastChannel = change->channel;
-        g_lastKind = change->kind;
-        g_lastValue = change->value;
-        g_lastRawIndex = change->rawIndex;
-        g_lastRawTableValue = change->rawTableValue;
-        if (g_lastKind == 0)
-        {
-            const auto percent = static_cast<int>(std::lround(g_lastValue * 100.0F));
-            const auto raw = static_cast<int>(std::lround(g_lastRawTableValue * 100.0F));
-            const auto title = L"FaderBridge EUCON — CH " +
-                std::to_wstring(g_lastChannel + 1) + L" HW " +
-                std::to_wstring(raw) + L" → Windows " +
-                std::to_wstring(percent) + L"%";
-            SetWindowTextW(window, title.c_str());
-        }
-        // Update the title before the command write so raw hardware feedback is
-        // never delayed by Windows audio-session work.
-        g_lastCommandSent = g_host->HandleSurfaceChange(*change);
-        if (g_lastKind >= 2 && g_lastKind <= 6)
-        {
-            InvalidateRect(window, nullptr, FALSE);
-        }
-        return 0;
-    }
-
-    case kAudioFrameMessage:
-    {
-        std::unique_ptr<AudioFrame> frame(reinterpret_cast<AudioFrame*>(lParam));
-        if (!frame || !g_host)
-        {
-            return 0;
-        }
-
-        bool visibleStateChanged = false;
-        visibleStateChanged = g_monoAudioEnabled != frame->monoAudioEnabled;
-        g_monoAudioEnabled = frame->monoAudioEnabled;
-        for (const auto& strip : frame->strips)
-        {
-            if (strip.slot < 0 || strip.slot >= EuconHost::MaxChannelCount)
-            {
-                continue;
-            }
-            const auto& previous = g_strips[strip.slot];
-            visibleStateChanged = visibleStateChanged || previous.active != strip.active ||
-                previous.muted != strip.muted || previous.isDefault != strip.isDefault ||
-                previous.name != strip.name ||
-                std::fabs(previous.volume - strip.volume) > 0.0005F;
-            g_strips[strip.slot] = strip;
-        }
-
-        const auto activeCount = g_host->ApplyAudioFrame(*frame);
-        if (activeCount != g_activeCount)
-        {
-            g_activeCount = activeCount;
-            const auto title = L"FaderBridge EUCON — " + std::to_wstring(activeCount) +
-                L" Windows audio channels";
-            SetWindowTextW(window, title.c_str());
-            visibleStateChanged = true;
-        }
-        if (visibleStateChanged)
-        {
-            InvalidateRect(window, nullptr, FALSE);
-        }
-        return 0;
-    }
-
-    case WM_TIMER:
-        if (wParam == kMotorFlushTimerId && g_host)
-        {
-            g_host->FlushPendingMotors();
-            return 0;
-        }
-        return DefWindowProcW(window, message, wParam, lParam);
-
-    case WM_PAINT:
-        PaintWindow(window);
-        return 0;
-
-    case WM_DESTROY:
-        g_host.reset();
-        PostQuitMessage(0);
-        return 0;
-
-    default:
-        return DefWindowProcW(window, message, wParam, lParam);
+        ShowWindow(window, SW_RESTORE);
+        SetForegroundWindow(window);
     }
 }
 }
 
-int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
+int WINAPI wWinMain(const HINSTANCE instance, HINSTANCE, PWSTR, const int showCommand)
 {
+    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    SetCurrentProcessExplicitAppUserModelID(L"Lindelea.WindowsFaderBridge");
+    WaitForRestartSource();
+
+    const auto instanceMutex = CreateMutexW(nullptr, TRUE, kSingleInstanceName);
+    if (!instanceMutex) return 1;
+    if (GetLastError() == ERROR_ALREADY_EXISTS)
+    {
+        ActivateExistingInstance();
+        CloseHandle(instanceMutex);
+        return 0;
+    }
+
     winrt::init_apartment(winrt::apartment_type::multi_threaded);
     DiagnosticLog::Instance().Start();
-    WNDCLASSW windowClass{};
-    windowClass.lpfnWndProc = WindowProcedure;
-    windowClass.hInstance = instance;
-    windowClass.lpszClassName = kWindowClass;
-    windowClass.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-    windowClass.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
-    if (!RegisterClassW(&windowClass))
-    {
-        return 1;
-    }
-
-    const auto window = CreateWindowExW(0, kWindowClass, L"FaderBridge EUCON starting…",
-        WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 720, 620,
-        nullptr, nullptr, instance, nullptr);
-    if (!window)
-    {
-        return 2;
-    }
-
-    ShowWindow(window, showCommand);
-    UpdateWindow(window);
-
-    MSG message{};
-    while (GetMessageW(&message, nullptr, 0, 0) > 0)
-    {
-        TranslateMessage(&message);
-        DispatchMessageW(&message);
-    }
+    const auto result = ApplicationShell::Run(instance, showCommand,
+        HasArgument(L"--background"));
     DiagnosticLog::Instance().Stop();
     winrt::uninit_apartment();
-    return static_cast<int>(message.wParam);
+    ReleaseMutex(instanceMutex);
+    CloseHandle(instanceMutex);
+    return result;
 }

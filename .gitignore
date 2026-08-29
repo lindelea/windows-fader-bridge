@@ -4,8 +4,7 @@ artifacts/
 $out/
 .vs/
 TestResults/
-research/upstream-asar/
-research/tools/
+research/
 sdk/
 tmp/
 EUCON_WorkstationUnifiedInstallWindows_*/
@@ -16,7 +15,4 @@ MIDI Mixer Setup *.exe
 *.log
 *.user
 *.suo
-src/FaderBridge.EuConApp/EuConApp/platform/win/EuConApp_MFC_vc17/
-src/FaderBridge.EuConApp/EuConApp/platform/win/int_vc17/
-src/FaderBridge.EuConApp/EuConApp/platform/win/x64/
-src/FaderBridge.EuConApp/EuConApp/boost/
+*.obj

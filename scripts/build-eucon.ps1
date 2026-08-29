@@ -1,7 +1,11 @@
+param(
+    [string]$AvidEuconSdkDir = 'C:\Program Files\Avid\EUCON SDK'
+)
+
 $ErrorActionPreference = 'Stop'
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
-$sdkHeader = 'C:\Program Files\Avid\EUCON SDK\include\EuConManager.h'
+$sdkHeader = Join-Path $AvidEuconSdkDir 'include\EuConManager.h'
 $vswhere = 'C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe'
 
 if (-not (Test-Path -LiteralPath $sdkHeader)) {
@@ -23,12 +27,14 @@ if (-not $visualStudio) {
 $msbuild = Join-Path $visualStudio 'MSBuild\Current\Bin\MSBuild.exe'
 $project = Join-Path $projectRoot 'src\FaderBridge.EuconHost\FaderBridge.EuconHost.vcxproj'
 $output = Join-Path $projectRoot 'artifacts\eucon\Release'
+$solutionDir = "/p:SolutionDir=$($projectRoot.Replace('\', '/'))/"
+$sdkDir = "/p:AvidEuconSdkDir=$($AvidEuconSdkDir.Replace('\', '/'))"
 
 & $msbuild $project /m /t:Build /p:Configuration=Release /p:Platform=x64 `
-    "/p:SolutionDir=$projectRoot\" /v:minimal
+    $solutionDir $sdkDir /v:minimal
 
 if ($LASTEXITCODE -ne 0) {
     throw "EUCON host build failed with exit code $LASTEXITCODE."
 }
 
-Write-Host "Built: $output\FaderBridge.EuconHost.exe"
+Write-Host "Built: $output\WindowsFaderBridge.exe"

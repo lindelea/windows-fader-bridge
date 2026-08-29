@@ -51,9 +51,8 @@ std::wstring TrackPersistenceId(const std::wstring& key)
 
 NEuCon::int32 ApplicationChannelColor(const std::wstring& key)
 {
-    // Saturated colors from the official EuConApp channel color example.
-    // Exclude white and dark greys so every active application is distinct
-    // from the uncolored/default surface state.
+    // Project fallback palette. Exclude white and dark greys so every active
+    // application is distinct from the uncolored/default surface state.
     static constexpr NEuCon::int32 colors[] =
     {
         0x000000FF, // blue
@@ -801,10 +800,10 @@ EuconHost::EuconHost(const HWND notificationWindow) : notificationWindow_(notifi
         kSupportsNumberOfChildrenAttribute, false);
     node_->Freeze();
     node_->SetPersistenceID(L"FaderBridge.WindowsAudio.2026");
-    node_->SetAttribute(kATRIBID_SimpleFriendlyName, L"FaderBridge Windows Audio");
+    node_->SetAttribute(kATRIBID_SimpleFriendlyName, L"Windows Fader Bridge");
 
-    // Match the official EuConApp processor ordering: global command processor
-    // before dynamic channel strips.
+    // Register global processors before the dynamic channel strips so the
+    // application model has stable top-level ordering.
     const auto clearSolo = [this]
     {
         if (audioController_)
@@ -818,7 +817,15 @@ EuconHost::EuconHost(const HWND notificationWindow) : notificationWindow_(notifi
             {
                 audioController_->QueueToggleMonoAudio();
             }
-        }, clearSolo);
+        }, clearSolo, [notificationWindow](const WindowsCommand command)
+        {
+            if (!PostMessageW(notificationWindow, kWindowsCommandMessage,
+                static_cast<WPARAM>(command), 0))
+            {
+                FB_TRACE("WINDOWS_COMMAND_QUEUE_FAILED command=%u error=%lu",
+                    static_cast<unsigned>(command), GetLastError());
+            }
+        });
     node_->RegisterProcessor(*commandProcessor_);
     systemProcessor_ = std::make_unique<WindowsSystemProcessor>(clearSolo);
     node_->RegisterProcessor(*systemProcessor_);
