@@ -209,6 +209,16 @@ The implementation builds successfully against EUCON SDK 2026.4. On
 result, ring feedback, bidirectional synchronization, and knob-press Center
 reset on S3. Avid Control remains to be explicitly regression-tested.
 
+Stereo render endpoints use the same EUCON Pan/Balance model through
+`IAudioEndpointVolume`. Unlike application-session channel factors, endpoint
+channel scalars are the absolute audio-tapered values displayed as the Windows
+left/right device sliders. The worker therefore keeps the louder side at the
+current endpoint Master value and attenuates only the opposite side; Pan cannot
+raise either leg above Master. Capture endpoints and non-stereo render
+endpoints remain excluded. On 2026-08-29, the user verified Master Pan,
+knob-press Center reset, Windows left/right UI linkage, and bidirectional
+feedback on the active Universal Audio Thunderbolt WDM output.
+
 ## True per-leg metering and mono format
 
 Meter API 3.1 is the primary meter path. Each live track declares its current
@@ -277,7 +287,7 @@ regression-tested for this workflow.
 | Windows mono command | Verified on S3 | A standards-based assignable command queues the Windows setting handler and Windows state owns its LED. Clear Solo press/LED and real mono processing were verified; Mix to Mons is fixed and unavailable for assignment. Avid Control remains to be tested. |
 | Application Solo / Clear Solo | Verified | Application channels use standard Solo semantics; the Windows worker performs single-target intercancel muting and restores the pre-Solo mute snapshot. The standard System Clear Solo and an assignable command share authoritative state and LED feedback. Endpoint channels are excluded. |
 | Select / Attention | Verified on S3 | Standard channel Select drives one-of-N Windows application activation; off minimizes the selected application. Surface-owned AttentionedTrackPID is consumed on the UI thread. PID, package-family, and executable matching cover helper/worker processes without device-specific code. |
-| Application Pan / balance | Verified on S3 | Stereo application sessions expose the predefined Pan knob set. A centered balance law writes independent `IChannelAudioVolume` gains while preserving the session master fader; knob-top press resets Center. Mono, multichannel, and endpoint tracks are excluded. Avid Control remains to be tested. |
+| Application and output Pan / balance | Verified on S3 | Stereo application sessions use independent `IChannelAudioVolume` factors; stereo render endpoints use absolute `IAudioEndpointVolume` channel scalars capped by Master. Both expose the predefined Pan knob set and knob-top Center reset. Capture and non-stereo tracks are excluded. Avid Control remains to be tested. |
 | Volume knob semantics | Needs work | Volume currently borrows the predefined Input knob-set layout. Confirm the correct standard model or use an official knob-map strategy. |
 | Meter API 3.1 | Verified | Windows supplies true per-leg peaks and endpoint channel roles. Tracks declare dynamic stereo/mono formats, save `VisibilityChangedV2` handles, and use `EuBatchedMeterWriter`; observed batched calls returned success. The ordinary write is isolated to startup/no-handle compatibility. |
 | Device-derived behavior | Needs review | Forced refresh and overtravel rebound came from hardware testing. Classify them as generic application policy or remove them after cross-surface tests. |

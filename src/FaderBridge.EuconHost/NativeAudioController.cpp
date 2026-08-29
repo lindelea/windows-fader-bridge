@@ -454,6 +454,18 @@ void MergeMeterPeaks(IAudioMeterInformation* meter, std::vector<float>& peaks)
     }
 }
 
+float BalanceFromChannelLevels(const float left, const float right)
+{
+    const auto maximum = std::max(left, right);
+    if (maximum <= 0.0001F || std::fabs(left - right) <= 0.0005F)
+    {
+        return 0.0F;
+    }
+    return left > right
+        ? -(1.0F - right / maximum)
+        : 1.0F - left / maximum;
+}
+
 std::wstring Utf8ToWide(const std::string& value)
 {
     if (value.empty())
@@ -1625,12 +1637,36 @@ struct NativeAudioController::Impl
             return false;
         }
         auto& slot = slots[slotIndex];
+        const auto pan = std::clamp(value, -1.0F, 1.0F);
+        if (slot.kind == SlotKind::RenderEndpoint && slot.endpointVolume)
+        {
+            UINT channelCount = 0U;
+            float master = 0.0F;
+            if (FAILED(slot.endpointVolume->GetChannelCount(&channelCount)) ||
+                channelCount != 2U ||
+                FAILED(slot.endpointVolume->GetMasterVolumeLevelScalar(&master)))
+            {
+                return false;
+            }
+            // Endpoint channel scalars are the absolute, audio-tapered values
+            // displayed by Windows Settings. Keep the louder side at the
+            // current Master ceiling so balance never raises device volume.
+            const auto left = master * (pan <= 0.0F ? 1.0F : 1.0F - pan);
+            const auto right = master * (pan >= 0.0F ? 1.0F : 1.0F + pan);
+            const auto leftResult = slot.endpointVolume->SetChannelVolumeLevelScalar(
+                0U, left, nullptr);
+            const auto rightResult = slot.endpointVolume->SetChannelVolumeLevelScalar(
+                1U, right, nullptr);
+            const auto changed = SUCCEEDED(leftResult) && SUCCEEDED(rightResult);
+            FB_TRACE("ENDPOINT_PAN_WRITE slot=%d pan=%.4f master=%.4f left=%.4f right=%.4f changed=%d",
+                slotIndex, pan, master, left, right, changed ? 1 : 0);
+            return changed;
+        }
         if (slot.kind != SlotKind::Application || slot.sessions.empty())
         {
             return false;
         }
 
-        const auto pan = std::clamp(value, -1.0F, 1.0F);
         // Balance law: center is 1/1, so moving through center never imposes
         // an equal-power -3 dB attenuation. The opposite channel alone is
         // attenuated as the control moves toward either edge.
@@ -1882,6 +1918,20 @@ struct NativeAudioController::Impl
                     {
                         strip.muted = muted != FALSE;
                     }
+                    if (slot.kind == SlotKind::RenderEndpoint)
+                    {
+                        UINT channelCount = 0U;
+                        float left = 1.0F;
+                        float right = 1.0F;
+                        if (SUCCEEDED(slot.endpointVolume->GetChannelCount(&channelCount)) &&
+                            channelCount == 2U &&
+                            SUCCEEDED(slot.endpointVolume->GetChannelVolumeLevelScalar(0U, &left)) &&
+                            SUCCEEDED(slot.endpointVolume->GetChannelVolumeLevelScalar(1U, &right)))
+                        {
+                            strip.panAvailable = true;
+                            strip.pan = BalanceFromChannelLevels(left, right);
+                        }
+                    }
                     std::vector<float> peaks;
                     MergeMeterPeaks(slot.endpointMeter.Get(), peaks);
                     strip.meterDb.reserve(peaks.size());
@@ -1963,19 +2013,7 @@ struct NativeAudioController::Impl
                             SUCCEEDED(session.channelVolume->GetChannelVolume(1U, &right)))
                         {
                             observation.panValid = true;
-                            const auto maximum = std::max(left, right);
-                            if (maximum <= 0.0001F || std::fabs(left - right) <= 0.0005F)
-                            {
-                                observation.pan = 0.0F;
-                            }
-                            else if (left > right)
-                            {
-                                observation.pan = -(1.0F - right / maximum);
-                            }
-                            else
-                            {
-                                observation.pan = 1.0F - left / maximum;
-                            }
+                            observation.pan = BalanceFromChannelLevels(left, right);
                             session.lastObservedPan = observation.pan;
                             session.panObserved = true;
                         }

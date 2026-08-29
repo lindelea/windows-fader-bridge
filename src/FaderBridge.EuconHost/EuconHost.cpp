@@ -480,13 +480,13 @@ std::unique_ptr<EuconHost::TrackState> EuconHost::CreateTrack(const int channelO
             const float rawValue) { report(value, 4, rawIndex, rawValue); };
         selectHandler = [report](const float value, const NEuCon::uint16 rawIndex,
             const float rawValue) { report(value, 5, rawIndex, rawValue); };
-        if (strip.panAvailable)
-        {
-            panHandler = [report](const float value, const NEuCon::uint16 rawIndex,
-                const float rawValue) { report(value, 7, rawIndex, rawValue); };
-            panResetHandler = [report](const float value, const NEuCon::uint16 rawIndex,
-                const float rawValue) { report(value, 8, rawIndex, rawValue); };
-        }
+    }
+    if (strip.panAvailable)
+    {
+        panHandler = [report](const float value, const NEuCon::uint16 rawIndex,
+            const float rawValue) { report(value, 7, rawIndex, rawValue); };
+        panResetHandler = [report](const float value, const NEuCon::uint16 rawIndex,
+            const float rawValue) { report(value, 8, rawIndex, rawValue); };
     }
     if (strip.defaultSelectable)
     {
