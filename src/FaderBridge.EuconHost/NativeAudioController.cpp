@@ -61,7 +61,7 @@ IPolicyConfig : public IUnknown
 };
 
 const CLSID CLSID_PolicyConfigClient =
-{ 0x870af99c, 0x171d, 0x4f9e, { 0xaf, 0x0d, 0xe6, 0x3d, 0xf4, 0x0d, 0x2b, 0xc9 } };
+{ 0x870af99c, 0x171d, 0x4f9e, { 0xaf, 0x0d, 0xe6, 0x3d, 0xf4, 0x0c, 0x2b, 0xc9 } };
 
 enum class SlotKind
 {
@@ -1167,20 +1167,28 @@ struct NativeAudioController::Impl
 
     bool ApplyDefaultEndpoint(const int slotIndex)
     {
+        FB_TRACE("DEFAULT_ENDPOINT_BEGIN slot=%d", slotIndex);
         if (slotIndex < 0 || slotIndex >= StripCount)
         {
+            FB_TRACE("DEFAULT_ENDPOINT_REJECT slot=%d reason=range", slotIndex);
             return false;
         }
         const auto& slot = slots[slotIndex];
         if ((slot.kind != SlotKind::RenderEndpoint && slot.kind != SlotKind::CaptureEndpoint) ||
             slot.endpointId.empty())
         {
+            FB_TRACE("DEFAULT_ENDPOINT_REJECT slot=%d reason=not-endpoint kind=%d id=%d",
+                slotIndex, static_cast<int>(slot.kind), slot.endpointId.empty() ? 0 : 1);
             return false;
         }
         ComPtr<IPolicyConfig> policy;
-        if (FAILED(CoCreateInstance(CLSID_PolicyConfigClient, nullptr, CLSCTX_ALL,
-            __uuidof(IPolicyConfig), reinterpret_cast<void**>(policy.GetAddressOf()))))
+        const auto createResult = CoCreateInstance(CLSID_PolicyConfigClient, nullptr,
+            CLSCTX_ALL, __uuidof(IPolicyConfig),
+            reinterpret_cast<void**>(policy.GetAddressOf()));
+        if (FAILED(createResult))
         {
+            FB_TRACE("DEFAULT_ENDPOINT_REJECT slot=%d reason=policy hr=%08X", slotIndex,
+                static_cast<unsigned>(createResult));
             return false;
         }
         // Set every Windows role so the selected endpoint behaves consistently

@@ -3,12 +3,14 @@
 #include "EuconHost.h"
 #include "DiagnosticLog.h"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <iomanip>
 #include <memory>
 #include <sstream>
 #include <string>
+#include <vector>
 
 namespace
 {
@@ -48,16 +50,25 @@ void PaintWindow(const HWND window)
     std::wostringstream text;
     text << L"Windows audio channels (linear 0–100% mapping)\r\n\r\n";
     text << std::fixed << std::setprecision(0);
-    int visibleApplications = 0;
-    for (int slot = 0; slot < EuconHost::MaxChannelCount; ++slot)
+    std::vector<const AudioStripState*> visibleStrips;
+    for (const auto& strip : g_strips)
     {
-        const auto& strip = g_strips[slot];
-        if (!strip.active)
+        if (strip.active)
         {
-            continue;
+            visibleStrips.push_back(&strip);
         }
-        ++visibleApplications;
-        text << L"CH" << std::setw(2) << (slot + 1) << L"  "
+    }
+    std::stable_sort(visibleStrips.begin(), visibleStrips.end(), [](const auto* left,
+        const auto* right)
+    {
+        return left->sortGroup != right->sortGroup
+            ? left->sortGroup < right->sortGroup
+            : left->name < right->name;
+    });
+    for (size_t index = 0; index < visibleStrips.size(); ++index)
+    {
+        const auto& strip = *visibleStrips[index];
+        text << L"CH" << std::setw(2) << (index + 1U) << L"  "
              << std::left << std::setw(30) << strip.name.substr(0, 29) << std::right
              << std::setw(4) << (strip.volume * 100.0F) << L"%  "
              << (strip.muted ? L"MUTE" : L"    ");
@@ -67,7 +78,7 @@ void PaintWindow(const HWND window)
         }
         text << L"\r\n";
     }
-    if (visibleApplications == 0)
+    if (visibleStrips.empty())
     {
         text << L"No active Windows audio applications.\r\n";
     }
@@ -165,7 +176,8 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             }
             const auto& previous = g_strips[strip.slot];
             visibleStateChanged = visibleStateChanged || previous.active != strip.active ||
-                previous.muted != strip.muted || previous.name != strip.name ||
+                previous.muted != strip.muted || previous.isDefault != strip.isDefault ||
+                previous.name != strip.name ||
                 std::fabs(previous.volume - strip.volume) > 0.0005F;
             g_strips[strip.slot] = strip;
         }

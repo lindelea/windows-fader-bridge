@@ -80,6 +80,11 @@ desktop API for changing the default endpoint. That write is isolated behind
 the `IPolicyConfig::SetDefaultEndpoint` compatibility boundary and applies the
 Console, Multimedia, and Communications roles together. Failures must not
 modify EUCON state optimistically; the next endpoint frame remains authoritative.
+On 2026-08-29, capture-endpoint selection from Rec and external Windows default
+selection were verified in both directions: all three roles returned `S_OK`,
+Windows Settings followed the surface selection, and the authoritative default
+state drove the mutually exclusive Rec LEDs. Diagnostics present logical EUCON
+channel order and never label a transient Core Audio slot as a channel number.
 
 Each track exposes standard EUCON semantics where applicable:
 
@@ -102,6 +107,7 @@ Each track exposes standard EUCON semantics where applicable:
 | Surface-independent capacity | Conformant | Only active processors are registered; the Core Audio ceiling is not a surface strip count. |
 | Callback thread discipline | Mostly conformant | Core Audio writes are queued; remaining SDK calls from callbacks require review. |
 | Track identity and ordering | Verified | Channel Processors are keyed by stable application identity. Mutable atomic routes target the current Core Audio slot; reordering retains the Processor and changes only `ChannelOrder` and channel number as specified by guide section 12.4. Verified smooth and near-zero-latency on the attached S3/Avid Control setup. |
+| Default endpoint selection | Verified | Active render/capture endpoints retain stable Processor identity. Rec is a one-shot request, Windows default state owns its LED, and Console/Multimedia/Communications roles switch together. Capture selection and reverse synchronization were verified on Windows 11 with S3. |
 | Volume knob semantics | Needs work | Volume currently borrows the predefined Input knob-set layout. Confirm the correct standard model or use an official knob-map strategy. |
 | Meter API 3.1 | Needs investigation | Setup calls return `kERR_OK`, but dynamically registered tracks did not receive the documented `VisibilityChangedV2` callback in the verified EuControl setup. The adapter now trusts callback state instead of querying/inventing visibility and uses an isolated, verified legacy write only while no valid 3.1 handle exists. |
 | Device-derived behavior | Needs review | Forced refresh and overtravel rebound came from hardware testing. Classify them as generic application policy or remove them after cross-surface tests. |
