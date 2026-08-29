@@ -27,6 +27,9 @@ foreach (var endpointGroup in sessions.GroupBy(session => new { session.Endpoint
         Console.WriteLine(
             $"    {session.DisplayName,-34} pid={session.ProcessId,-6} " +
             $"vol={session.Volume,6:P0} peak={session.Peak,6:P0} mute={session.IsMuted,-5} state={session.State}");
+        Console.WriteLine($"      grouping={session.GroupingParam}");
+        Console.WriteLine($"      raw-name={session.RawDisplayName}");
+        Console.WriteLine($"      session={session.SessionId}");
         Console.WriteLine($"      id={session.SessionInstanceId}");
         Console.WriteLine($"      path={session.ProcessPath ?? "<unavailable>"}");
     }

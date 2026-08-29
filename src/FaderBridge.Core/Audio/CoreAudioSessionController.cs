@@ -8,8 +8,11 @@ public sealed class CoreAudioSessionController
     public const int StripCount = 16;
 
     private readonly object sync = new();
-    private readonly StableSlotAllocator allocator = new(StripCount, TimeSpan.Zero);
+    private readonly StableSlotAllocator allocator = new(StripCount);
     private readonly string?[] keysBySlot = new string?[StripCount];
+    private readonly uint[][] processIdsBySlot = Enumerable.Range(0, StripCount)
+        .Select(_ => Array.Empty<uint>())
+        .ToArray();
 
     public IReadOnlyList<AudioStripSnapshot> ReadStrips()
     {
@@ -18,6 +21,7 @@ public sealed class CoreAudioSessionController
             var applications = ReadApplications();
             var slots = allocator.Update(applications.Select(application => application.Key), DateTimeOffset.UtcNow);
             Array.Clear(keysBySlot);
+            Array.Fill(processIdsBySlot, Array.Empty<uint>());
 
             var result = Enumerable.Range(0, StripCount)
                 .Select(slot => new AudioStripSnapshot(slot, false, string.Empty, 0f, -120f, false))
@@ -31,6 +35,7 @@ public sealed class CoreAudioSessionController
                 }
 
                 keysBySlot[slot] = application.Key;
+                processIdsBySlot[slot] = application.ProcessIds.ToArray();
                 result[slot] = new AudioStripSnapshot(
                     slot,
                     true,
@@ -46,25 +51,27 @@ public sealed class CoreAudioSessionController
 
     public bool SetVolume(int slot, float volume)
     {
-        lock (sync)
-        {
-            var key = GetSlotKey(slot);
-            return key is not null && Apply(key, session =>
-                session.SimpleAudioVolume.Volume = Math.Clamp(volume, 0f, 1f));
-        }
+        var processIds = GetSlotProcessIds(slot);
+        return processIds.Length > 0 && Apply(processIds, session =>
+            session.SimpleAudioVolume.Volume = Math.Clamp(volume, 0f, 1f));
     }
 
     public bool SetMute(int slot, bool isMuted)
     {
-        lock (sync)
-        {
-            var key = GetSlotKey(slot);
-            return key is not null && Apply(key, session => session.SimpleAudioVolume.Mute = isMuted);
-        }
+        var processIds = GetSlotProcessIds(slot);
+        return processIds.Length > 0 && Apply(processIds,
+            session => session.SimpleAudioVolume.Mute = isMuted);
     }
 
-    private string? GetSlotKey(int slot) =>
-        slot >= 0 && slot < keysBySlot.Length ? keysBySlot[slot] : null;
+    private uint[] GetSlotProcessIds(int slot)
+    {
+        lock (sync)
+        {
+            return slot >= 0 && slot < processIdsBySlot.Length
+                ? processIdsBySlot[slot]
+                : Array.Empty<uint>();
+        }
+    }
 
     private static IReadOnlyList<AppAudioSessionSnapshot> ReadApplications()
     {
@@ -80,7 +87,6 @@ public sealed class CoreAudioSessionController
             {
                 continue;
             }
-
             entries.Add(ReadEntry(session));
         }
 
@@ -92,12 +98,13 @@ public sealed class CoreAudioSessionController
                 group.Select(entry => entry.DisplayName).First(name => !string.IsNullOrWhiteSpace(name)),
                 group.Average(entry => entry.Volume),
                 group.Max(entry => entry.Peak),
-                group.All(entry => entry.IsMuted)))
+                group.All(entry => entry.IsMuted),
+                group.Select(entry => entry.ProcessId).Where(id => id != 0).ToHashSet()))
             .OrderBy(application => application.DisplayName, StringComparer.OrdinalIgnoreCase)
             .ToArray();
     }
 
-    private static bool Apply(string key, Action<AudioSessionControl> action)
+    private static bool Apply(IReadOnlyCollection<uint> processIds, Action<AudioSessionControl> action)
     {
         using var enumerator = new MMDeviceEnumerator();
         using var endpoint = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
@@ -107,11 +114,10 @@ public sealed class CoreAudioSessionController
         for (var index = 0; index < sessions.Count; index++)
         {
             using var session = sessions[index];
-            if (!string.Equals(ReadEntry(session).Key, key, StringComparison.OrdinalIgnoreCase))
+            if (!processIds.Contains(session.GetProcessID))
             {
                 continue;
             }
-
             action(session);
             changed = true;
         }
@@ -140,6 +146,7 @@ public sealed class CoreAudioSessionController
             session.SimpleAudioVolume.Volume,
             session.AudioMeterInformation.MasterPeakValue,
             session.SimpleAudioVolume.Mute,
+            processId,
             isSystemSounds);
     }
 
@@ -190,5 +197,6 @@ public sealed class CoreAudioSessionController
         float Volume,
         float Peak,
         bool IsMuted,
+        uint ProcessId,
         bool IsSystemSounds);
 }

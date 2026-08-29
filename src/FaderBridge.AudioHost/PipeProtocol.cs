@@ -38,15 +38,14 @@ internal static class PipeProtocol
         }
 
         var payload = payloadStream.ToArray();
-        var header = BitConverter.GetBytes(payload.Length);
-        await pipe.WriteAsync(header, cancellationToken);
+        await pipe.WriteAsync(BitConverter.GetBytes(payload.Length), cancellationToken);
         await pipe.WriteAsync(payload, cancellationToken);
         await pipe.FlushAsync(cancellationToken);
     }
 
     public static async Task ReadCommandsAsync(
         NamedPipeServerStream pipe,
-        AudioCommandBuffer commandBuffer,
+        CoreAudioSessionController controller,
         CancellationToken cancellationToken)
     {
         var header = new byte[sizeof(int)];
@@ -75,10 +74,10 @@ internal static class PipeProtocol
             switch (messageType)
             {
                 case SetVolumeMessage when length == 6:
-                    commandBuffer.SetVolume(slot, reader.ReadSingle());
+                    controller.SetVolume(slot, reader.ReadSingle());
                     break;
                 case SetMuteMessage when length == 3:
-                    commandBuffer.SetMute(slot, reader.ReadByte() != 0);
+                    controller.SetMute(slot, reader.ReadByte() != 0);
                     break;
                 default:
                     throw new InvalidDataException($"Unknown command type: {messageType}");

@@ -41,14 +41,14 @@
       <WarningLevel>Level4</WarningLevel>
       <SDLCheck>true</SDLCheck>
       <LanguageStandard>stdcpp17</LanguageStandard>
-      <PreprocessorDefinitions>WIN32;_WINDOWS;_DEBUG;UNICODE;_UNICODE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN32;_WINDOWS;_DEBUG;UNICODE;_UNICODE;NOMINMAX;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
-      <AdditionalIncludeDirectories>C:\Program Files\Avid\EUCON SDK\include;C:\Program Files\Avid\EUCON SDK\include\ProcessorAPI;$(USERPROFILE)\Documents\Avid\EUCON SDK\EuConApp;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)src\FaderBridge.EuConApp\EuConApp;$(SolutionDir)src\FaderBridge.EuConApp\Common;C:\Program Files\Avid\EUCON SDK\include;C:\Program Files\Avid\EUCON SDK\include\ProcessorAPI;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
       <AdditionalLibraryDirectories>C:\Program Files\Avid\EUCON SDK\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>EuAPI2d_vc17.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>EuAPI2d_vc17.lib;Avrt.lib;Ole32.lib;Shlwapi.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -58,28 +58,32 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <LanguageStandard>stdcpp17</LanguageStandard>
-      <PreprocessorDefinitions>WIN32;_WINDOWS;NDEBUG;UNICODE;_UNICODE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN32;_WINDOWS;NDEBUG;UNICODE;_UNICODE;NOMINMAX;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
-      <AdditionalIncludeDirectories>C:\Program Files\Avid\EUCON SDK\include;C:\Program Files\Avid\EUCON SDK\include\ProcessorAPI;$(USERPROFILE)\Documents\Avid\EUCON SDK\EuConApp;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)src\FaderBridge.EuConApp\EuConApp;$(SolutionDir)src\FaderBridge.EuConApp\Common;C:\Program Files\Avid\EUCON SDK\include;C:\Program Files\Avid\EUCON SDK\include\ProcessorAPI;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <AdditionalLibraryDirectories>C:\Program Files\Avid\EUCON SDK\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>EuAPI2_vc17.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>EuAPI2_vc17.lib;Avrt.lib;Ole32.lib;Shlwapi.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="AudioPipeClient.cpp" />
+    <ClCompile Include="..\FaderBridge.EuConApp\Common\ExUtils.cpp" />
+    <ClCompile Include="..\FaderBridge.EuConApp\EuConApp\ExProcessorCommand.cpp" />
+    <ClCompile Include="DiagnosticLog.cpp" />
     <ClCompile Include="EuconChannel.cpp" />
     <ClCompile Include="EuconHost.cpp" />
     <ClCompile Include="main.cpp" />
+    <ClCompile Include="NativeAudioController.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="AudioPipeClient.h" />
+    <ClInclude Include="DiagnosticLog.h" />
     <ClInclude Include="EuconChannel.h" />
     <ClInclude Include="EuconHost.h" />
+    <ClInclude Include="NativeAudioController.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

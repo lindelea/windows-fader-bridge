@@ -5,7 +5,8 @@ public sealed record AppAudioSessionSnapshot(
     string DisplayName,
     float Volume,
     float Peak,
-    bool IsMuted);
+    bool IsMuted,
+    IReadOnlySet<uint> ProcessIds);
 
 public sealed record AudioStripSnapshot(
     int Slot,

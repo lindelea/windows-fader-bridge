@@ -10,7 +10,6 @@ Console.CancelKeyPress += (_, eventArgs) =>
 };
 
 var controller = new CoreAudioSessionController();
-var commandBuffer = new AudioCommandBuffer();
 
 while (!cancellation.IsCancellationRequested)
 {
@@ -24,23 +23,13 @@ while (!cancellation.IsCancellationRequested)
             PipeOptions.Asynchronous);
 
         await pipe.WaitForConnectionAsync(cancellation.Token);
-        var commandTask = PipeProtocol.ReadCommandsAsync(pipe, commandBuffer, cancellation.Token);
+        // Commands are applied directly by the pipe reader. The 30 ms cadence
+        // below is only for metering/snapshots and never delays a fader write.
+        var commandTask = PipeProtocol.ReadCommandsAsync(pipe, controller, cancellation.Token);
 
         while (pipe.IsConnected && !commandTask.IsCompleted && !cancellation.IsCancellationRequested)
         {
-            foreach (var command in commandBuffer.Drain())
-            {
-                if (command.Volume is { } volume)
-                {
-                    controller.SetVolume(command.Slot, volume);
-                }
-                if (command.Muted is { } muted)
-                {
-                    controller.SetMute(command.Slot, muted);
-                }
-            }
-            var strips = controller.ReadStrips();
-            await PipeProtocol.WriteSnapshotAsync(pipe, strips, cancellation.Token);
+            await PipeProtocol.WriteSnapshotAsync(pipe, controller.ReadStrips(), cancellation.Token);
             await Task.Delay(30, cancellation.Token);
         }
 
@@ -50,7 +39,8 @@ while (!cancellation.IsCancellationRequested)
     {
         break;
     }
-    catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException)
+    catch (Exception exception) when (
+        exception is IOException or UnauthorizedAccessException or InvalidOperationException)
     {
         await Task.Delay(500, cancellation.Token);
     }

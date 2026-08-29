@@ -51,8 +51,11 @@ public sealed class CoreAudioSessionReader
         return new AudioSessionSnapshot(
             endpoint.ID,
             endpoint.FriendlyName,
+            session.GetGroupingParam(),
+            session.GetSessionIdentifier,
             session.GetSessionInstanceIdentifier,
             processId,
+            session.DisplayName ?? string.Empty,
             displayName,
             process.Path,
             session.SimpleAudioVolume.Volume,

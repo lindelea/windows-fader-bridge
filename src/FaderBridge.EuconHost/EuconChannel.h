@@ -7,8 +7,12 @@
 #include "EuControlTextDisplay.h"
 #include "EuProcessor.h"
 
+#include <atomic>
 #include <functional>
+#include <mutex>
 #include <string>
+
+class EuBatchedMeterWriter;
 
 class EuconChannel final : public EuProcessor
 {
@@ -16,16 +20,19 @@ public:
     using ChangeHandler = std::function<void(int channelIndex, float value,
         NEuCon::uint16 rawIndex, float rawTableValue)>;
 
-    EuconChannel(int channelIndex, const std::wstring& displayName, ChangeHandler faderHandler,
+    EuconChannel(int channelIndex, const std::wstring& persistenceId,
+                 const std::wstring& displayName, ChangeHandler faderHandler,
                  ChangeHandler knobHandler, ChangeHandler muteHandler);
     ~EuconChannel() override;
 
-    void SetFaderDb(float valueDb);
-    void SetKnobPosition(float normalizedPosition);
-    void SetMeterDb(float valueDb);
-    void WriteMeterDb(class EuBatchedMeterWriter& writer, float valueDb);
-    void SetMute(bool value);
+    void SetFaderNormalized(float value);
+    void SetKnobNormalized(float value);
     void SetName(const std::wstring& value);
+    void ApplyPendingFaderRebound();
+    void SetMuted(bool muted);
+    void PostRegisterMeterInitialization();
+    void SetMeterVisibility(bool visible, tVisibilityHandle handle, tEuMeterFormat format);
+    void WriteMeterDb(EuBatchedMeterWriter& writer, float valueDb, bool clip);
 
     void OnPrimitiveCallback(tEVT eventType, NEuCon::uint32 eventFlags,
         NEuCon::uint32 controlId, NEuCon::uint32 arrayMemberControlId,
@@ -59,6 +66,12 @@ private:
     EuControlMultiMeter meter_;
     EuControlKnobCellArray knobSet_;
     EuControlKnobCell knob_;
-    tEuMeterFormat meterFormat_ = kEuInvalidMeterFormat;
     NEuCon::uint32 knobMemberId_ = 0;
+    std::atomic_bool faderReboundPending_ = false;
+    std::atomic_bool faderTouched_ = false;
+    std::atomic<unsigned long long> faderTouchReleaseDeadline_ = 0;
+    std::mutex meterMutex_;
+    bool meterVisible_ = false;
+    tVisibilityHandle meterVisibilityHandle_ = kEuInvalidVisibilityHandle;
+    tEuMeterFormat meterFormat_ = kEuInvalidMeterFormat;
 };

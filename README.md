@@ -1,53 +1,51 @@
-# FaderBridge
+# Windows Fader Bridge
 
-FaderBridge is an in-progress Windows audio-session mixer bridge for MIDI and
-control-surface hardware. The first target devices are:
+Windows Fader Bridge is an experimental native control-surface bridge for the
+Windows per-application volume mixer. Its first hardware target is the Avid S3
+through the native EUCON 2026.4 SDK; iCON P1-Nano/Mackie Control support is also
+planned.
 
-- Avid S3 through the native EUCON 2026.4 SDK
-- iCON P1-Nano through its class-compliant Mackie Control MIDI port
+## Current EUCON prototype
 
-The repository currently contains a read-only probe plus the first protocol
-codec. It does not change volume or send MIDI during probing.
+`src/FaderBridge.EuconHost` is a native x64 EUCON application. It currently
+provides:
 
-## Run the hardware probe
+- event-driven Windows Core Audio session discovery and updates;
+- one virtual EUCON channel per active Windows audio application;
+- S3 banking beyond the 16 physical faders;
+- bidirectional fader, encoder, mute, OLED label and position-ring sync;
+- per-application peak meters using EUCON Meter API 3.1;
+- stable application persistence IDs for EuControl assignments and layouts;
+- direct Core Audio writes on an MMCSS worker for low control latency.
 
-```powershell
-dotnet run --project .\src\FaderBridge.Probe
-```
+The fader mapping is intentionally linear: S3 table coordinates `-9600..0`
+map to Windows volume `0..100%`. The region above 0 dB is treated as physical
+overtravel and rebounds to Windows 100%.
 
-## Test
+## Build
 
-```powershell
-dotnet test
-```
+Requirements:
 
-## Design direction
-
-The core is deliberately Windows-native and separate from the eventual UI:
-
-1. Core Audio snapshots enumerate every active render endpoint and its sessions.
-2. Stable rules map a strip to a process path, AppUserModel identity, endpoint,
-   or the current foreground session.
-3. Device adapters translate MIDI/Mackie messages into normalized actions and
-   translate current volume, mute, labels, and peak values back to the hardware.
-4. Adapters are replaceable so native EUCON and MIDI/Mackie hardware share the
-   audio engine without leaking protocol-specific behavior into it.
-
-The existing MIDI Mixer 2.7.3 installation is used only as behavioral and
-interoperability research material. Its source is not copied into this project.
-
-## Native EUCON 2026.4 probe
-
-`src/FaderBridge.EuconHost` is a native x64 EUCON client, not a MIDI or Mackie
-translator. It publishes 16 channel-strip processors to EuControl with motor
-faders, mute, displays, rotary controls, and meters.
-
-Build it with:
+- Windows 11 x64;
+- Avid EUCON SDK and Workstation Unified 2026.4;
+- Visual Studio 2022 v143 C++ build tools.
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\build-eucon.ps1
 ```
 
-The probe requires Avid EUCON SDK/Workstation Unified 2026.4 and the Visual
-Studio 2022 v143 C++ toolchain. See `docs/EUCON_2026.md` for the implementation
-and test plan.
+The executable is written to
+`artifacts/eucon/Release/FaderBridge.EuconHost.exe`.
+
+Only one EUCON test application should run at a time. The SDK, EuControl
+installer, build artifacts and diagnostic logs are deliberately excluded from
+Git.
+
+## Repository status
+
+This is an active hardware-research project, not a finished release. The
+`src/FaderBridge.EuConApp` directory is a private working baseline derived from
+the Avid SDK example and remains subject to the Avid EUCON SDK License
+Agreement. Do not redistribute that directory without confirming the license.
+
+Implementation notes and verified S3 behavior are recorded under `docs/`.

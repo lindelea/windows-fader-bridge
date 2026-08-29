@@ -1,7 +1,9 @@
 #include <Windows.h>
 
 #include "EuconHost.h"
+#include "DiagnosticLog.h"
 
+#include <array>
 #include <cmath>
 #include <iomanip>
 #include <memory>
@@ -10,26 +12,16 @@
 
 namespace
 {
-constexpr wchar_t kWindowClass[] = L"FaderBridgeEuconProbeWindow";
+constexpr wchar_t kWindowClass[] = L"FaderBridgeEuconWindow";
 std::unique_ptr<EuconHost> g_host;
+std::array<AudioStripState, EuconHost::MaxChannelCount> g_strips{};
 int g_activeCount = -1;
-
-struct DebugState
-{
-    bool hasSurfaceInput = false;
-    int channel = 0;
-    int kind = 0;
-    NEuCon::uint16 rawIndex = 0U;
-    float rawTableValue = 0.0F;
-    float commandVolume = 0.0F;
-    bool commandSent = false;
-    bool observedActive = false;
-    float observedVolume = 0.0F;
-    float observedPeakDb = -120.0F;
-    std::wstring observedName;
-};
-
-DebugState g_debug;
+int g_lastChannel = -1;
+int g_lastKind = 0;
+float g_lastValue = 0.0F;
+NEuCon::uint16 g_lastRawIndex = 0U;
+float g_lastRawTableValue = 0.0F;
+bool g_lastCommandSent = false;
 
 const wchar_t* ChangeKindName(const int kind)
 {
@@ -42,7 +34,7 @@ const wchar_t* ChangeKindName(const int kind)
     }
 }
 
-void PaintDebugWindow(const HWND window)
+void PaintWindow(const HWND window)
 {
     PAINTSTRUCT paint{};
     const auto dc = BeginPaint(window, &paint);
@@ -53,46 +45,51 @@ void PaintDebugWindow(const HWND window)
     SetBkMode(dc, TRANSPARENT);
 
     std::wostringstream text;
-    text << std::fixed << std::setprecision(2);
-    if (!g_debug.hasSurfaceInput)
+    text << L"Windows applications (linear 0–100% mapping)\r\n\r\n";
+    text << std::fixed << std::setprecision(0);
+    int visibleApplications = 0;
+    for (int slot = 0; slot < EuconHost::MaxChannelCount; ++slot)
     {
-        text << L"Move an S3 fader to capture raw EUCON data.\r\n\r\n";
-    }
-    else
-    {
-        text << L"Last S3 input: CH" << (g_debug.channel + 1) << L" "
-             << ChangeKindName(g_debug.kind) << L"\r\n";
-        text << L"Raw index: " << g_debug.rawIndex << L" / 1023"
-             << L"    SDK table value: " << g_debug.rawTableValue << L" dB\r\n";
-        text << L"Mapped Windows command: " << (g_debug.commandVolume * 100.0F) << L"%"
-             << L"    Pipe write: " << (g_debug.commandSent ? L"OK" : L"FAILED") << L"\r\n";
-    }
-
-    if (g_debug.observedActive)
-    {
-        text << L"Windows feedback CH" << (g_debug.channel + 1) << L": "
-             << g_debug.observedName << L"    " << (g_debug.observedVolume * 100.0F)
-             << L"%    peak " << g_debug.observedPeakDb << L" dB\r\n";
-        if (g_debug.hasSurfaceInput && g_debug.kind != 2)
+        const auto& strip = g_strips[slot];
+        if (!strip.active)
         {
-            text << L"Command/feedback delta: "
-                 << ((g_debug.commandVolume - g_debug.observedVolume) * 100.0F)
-                 << L" percentage points\r\n";
+            continue;
         }
+        ++visibleApplications;
+        text << L"CH" << std::setw(2) << (slot + 1) << L"  "
+             << std::left << std::setw(30) << strip.name.substr(0, 29) << std::right
+             << std::setw(4) << (strip.volume * 100.0F) << L"%  "
+             << (strip.muted ? L"MUTE" : L"    ");
+        text << L"\r\n";
     }
-    else
+    if (visibleApplications == 0)
     {
-        text << L"Windows feedback CH" << (g_debug.channel + 1) << L": inactive / empty\r\n";
+        text << L"No active Windows audio applications.\r\n";
     }
 
-    text << L"\r\nAvid ExFaderTable: bottom index 0 (Mute/-144.5 dB) | unity index 728 (0 dB) | "
-            L"hardware top index 1023 (+12 dB)\r\n"
-            L"Windows mapping: scalar <-> 20*log10(value); maximum is S3 unity 0 dB";
+    text << L"\r\n";
+    if (g_lastChannel >= 0)
+    {
+        text << L"Last S3 hardware: CH" << (g_lastChannel + 1) << L" "
+             << ChangeKindName(g_lastKind) << L"    raw index " << g_lastRawIndex
+             << L"    table value ";
+        if (g_lastKind == 2)
+        {
+            text << (g_lastRawTableValue == 0.0F ? L"Off" : L"On");
+        }
+        else
+        {
+            text << static_cast<int>(std::lround(g_lastRawTableValue * 100.0F));
+        }
+        text << L"\r\nMapped Windows command: "
+             << static_cast<int>(std::lround(g_lastValue * 100.0F)) << L"%"
+             << L"    write: " << (g_lastCommandSent ? L"OK" : L"not connected");
+    }
 
     auto value = text.str();
     InflateRect(&client, -16, -14);
     DrawTextW(dc, value.c_str(), static_cast<int>(value.size()), &client,
-        DT_LEFT | DT_TOP | DT_NOPREFIX | DT_WORDBREAK);
+        DT_LEFT | DT_TOP | DT_NOPREFIX);
     EndPaint(window, &paint);
 }
 
@@ -104,7 +101,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         g_host = std::make_unique<EuconHost>(window);
         if (g_host->IsReady())
         {
-            SetWindowTextW(window, L"FaderBridge EUCON — waiting for Windows audio…");
+            SetWindowTextW(window, L"FaderBridge EUCON — connecting Windows audio…");
         }
         else
         {
@@ -113,23 +110,39 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             SetWindowTextW(window, title.c_str());
         }
         return 0;
+
     case kSurfaceChangeMessage:
     {
         std::unique_ptr<SurfaceChange> change(reinterpret_cast<SurfaceChange*>(lParam));
-        if (!change || !g_host)
+        if (!g_host || !change)
         {
             return 0;
         }
-        g_debug.hasSurfaceInput = true;
-        g_debug.channel = change->channel;
-        g_debug.kind = change->kind;
-        g_debug.rawIndex = change->rawIndex;
-        g_debug.rawTableValue = change->rawTableValue;
-        g_debug.commandVolume = change->value;
-        g_debug.commandSent = g_host->HandleSurfaceChange(*change);
-        InvalidateRect(window, nullptr, FALSE);
+        g_lastChannel = change->channel;
+        g_lastKind = change->kind;
+        g_lastValue = change->value;
+        g_lastRawIndex = change->rawIndex;
+        g_lastRawTableValue = change->rawTableValue;
+        if (g_lastKind == 0)
+        {
+            const auto percent = static_cast<int>(std::lround(g_lastValue * 100.0F));
+            const auto raw = static_cast<int>(std::lround(g_lastRawTableValue * 100.0F));
+            const auto title = L"FaderBridge EUCON — CH " +
+                std::to_wstring(g_lastChannel + 1) + L" HW " +
+                std::to_wstring(raw) + L" → Windows " +
+                std::to_wstring(percent) + L"%";
+            SetWindowTextW(window, title.c_str());
+        }
+        // Update the title before the command write so raw hardware feedback is
+        // never delayed by Windows audio-session work.
+        g_lastCommandSent = g_host->HandleSurfaceChange(*change);
+        if (g_lastKind == 2)
+        {
+            InvalidateRect(window, nullptr, FALSE);
+        }
         return 0;
     }
+
     case kAudioFrameMessage:
     {
         std::unique_ptr<AudioFrame> frame(reinterpret_cast<AudioFrame*>(lParam));
@@ -137,42 +150,54 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         {
             return 0;
         }
-        const auto activeCount = g_host->ApplyAudioFrame(*frame);
+
+        bool visibleStateChanged = false;
         for (const auto& strip : frame->strips)
         {
-            if (strip.slot != g_debug.channel)
+            if (strip.slot < 0 || strip.slot >= EuconHost::MaxChannelCount)
             {
                 continue;
             }
-            const auto changed = g_debug.observedActive != strip.active ||
-                std::fabs(g_debug.observedVolume - strip.volume) > 0.0005F ||
-                g_debug.observedName != strip.name;
-            g_debug.observedActive = strip.active;
-            g_debug.observedVolume = strip.volume;
-            g_debug.observedPeakDb = strip.peakDb;
-            g_debug.observedName = strip.name;
-            if (changed)
-            {
-                InvalidateRect(window, nullptr, FALSE);
-            }
-            break;
+            const auto& previous = g_strips[strip.slot];
+            visibleStateChanged = visibleStateChanged || previous.active != strip.active ||
+                previous.muted != strip.muted || previous.name != strip.name ||
+                std::fabs(previous.volume - strip.volume) > 0.0005F;
+            g_strips[strip.slot] = strip;
         }
+
+        const auto activeCount = g_host->ApplyAudioFrame(*frame);
         if (activeCount != g_activeCount)
         {
             g_activeCount = activeCount;
             const auto title = L"FaderBridge EUCON — " + std::to_wstring(activeCount) +
                 L" Windows audio apps";
             SetWindowTextW(window, title.c_str());
+            visibleStateChanged = true;
+        }
+        if (visibleStateChanged)
+        {
+            InvalidateRect(window, nullptr, FALSE);
         }
         return 0;
     }
+
+    case WM_TIMER:
+        if (wParam == kMotorFlushTimerId && g_host)
+        {
+            g_host->FlushPendingMotors();
+            return 0;
+        }
+        return DefWindowProcW(window, message, wParam, lParam);
+
     case WM_PAINT:
-        PaintDebugWindow(window);
+        PaintWindow(window);
         return 0;
+
     case WM_DESTROY:
         g_host.reset();
         PostQuitMessage(0);
         return 0;
+
     default:
         return DefWindowProcW(window, message, wParam, lParam);
     }
@@ -181,6 +206,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
 {
+    DiagnosticLog::Instance().Start();
     WNDCLASSW windowClass{};
     windowClass.lpfnWndProc = WindowProcedure;
     windowClass.hInstance = instance;
@@ -193,7 +219,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
     }
 
     const auto window = CreateWindowExW(0, kWindowClass, L"FaderBridge EUCON starting…",
-        WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 860, 300,
+        WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 720, 620,
         nullptr, nullptr, instance, nullptr);
     if (!window)
     {
@@ -209,5 +235,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
         TranslateMessage(&message);
         DispatchMessageW(&message);
     }
+    DiagnosticLog::Instance().Stop();
     return static_cast<int>(message.wParam);
 }

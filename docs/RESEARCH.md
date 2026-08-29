@@ -59,15 +59,25 @@ all P1-Nano and EuMidi ports without touching the running application.
 
 ## Windows audio strategy
 
-- Enumerate every active render endpoint, then every Core Audio session.
-- Resolve a fresh session handle before writes; never persist COM session objects.
-- Persist matching rules (process path, packaged-app identity, endpoint, or
-  foreground fallback), not transient PIDs or session-instance IDs.
-- Coalesce high-rate fader input and meter output separately.
-- Poll peaks around 30-60 Hz, quantize to the hardware's LED segments, and avoid
-  sending unchanged values.
-- Treat device removal, sleep/resume, audio-service restart, and MIDI port
-  replacement as normal state transitions.
+Archaeology of MIDI Mixer 2.7.3 shows that its .NET core uses NAudio/CoreAudio
+session notifications and cached session objects (`MixerWatcher`,
+`_CachedSession`, `IAudioSessionNotification`, and `IAudioSessionEventsHandler`).
+Its meter timer is separate from volume writes. This is the important latency
+lesson; repeatedly enumerating sessions on every fader sample is unnecessary.
+
+The native EUCON path now follows the same hot-path shape:
+
+- S3 -> EuControl -> native EUCON callback -> lock-free latest-value queue
+- a same-process MMCSS CoreAudio worker writes cached `ISimpleAudioVolume`
+  interfaces immediately
+- no Win32 UI dispatch, named pipe, or .NET process participates in a fader write
+- session discovery and 30 Hz meter snapshots are outside the write path
+- a surface-originated write is acknowledged without driving its own motor;
+  externally-originated Windows changes drive the fader and encoder ring
+
+Future resilience work should replace periodic discovery with session/device
+notifications and treat endpoint removal, sleep/resume, and Audio Service restart
+as normal state transitions.
 
 ## External references
 

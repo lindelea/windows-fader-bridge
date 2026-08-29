@@ -22,14 +22,7 @@ if (-not $visualStudio) {
 
 $msbuild = Join-Path $visualStudio 'MSBuild\Current\Bin\MSBuild.exe'
 $project = Join-Path $projectRoot 'src\FaderBridge.EuconHost\FaderBridge.EuconHost.vcxproj'
-$audioHost = Join-Path $projectRoot 'src\FaderBridge.AudioHost\FaderBridge.AudioHost.csproj'
 $output = Join-Path $projectRoot 'artifacts\eucon\Release'
-
-& dotnet publish $audioHost --configuration Release --output $output --no-self-contained
-
-if ($LASTEXITCODE -ne 0) {
-    throw "Windows audio host publish failed with exit code $LASTEXITCODE."
-}
 
 & $msbuild $project /m /t:Build /p:Configuration=Release /p:Platform=x64 `
     "/p:SolutionDir=$projectRoot\" /v:minimal

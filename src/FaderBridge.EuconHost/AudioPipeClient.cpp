@@ -70,7 +70,8 @@ void AudioPipeClient::StartAudioHostIfNeeded()
     }
 
     std::array<wchar_t, MAX_PATH> modulePath{};
-    const auto length = GetModuleFileNameW(nullptr, modulePath.data(), static_cast<DWORD>(modulePath.size()));
+    const auto length = GetModuleFileNameW(nullptr, modulePath.data(),
+        static_cast<DWORD>(modulePath.size()));
     if (length == 0 || length == modulePath.size())
     {
         return;
@@ -87,9 +88,10 @@ void AudioPipeClient::StartAudioHostIfNeeded()
     STARTUPINFOW startup{};
     startup.cb = sizeof(startup);
     PROCESS_INFORMATION process{};
-    std::vector<wchar_t> commandLine(audioHostPath.begin(), audioHostPath.end());
-    commandLine.push_back(L'\0');
-    if (!CreateProcessW(audioHostPath.c_str(), commandLine.data(), nullptr, nullptr, FALSE,
+    std::wstring commandLine = L"\"" + audioHostPath + L"\"";
+    std::vector<wchar_t> mutableCommandLine(commandLine.begin(), commandLine.end());
+    mutableCommandLine.push_back(L'\0');
+    if (!CreateProcessW(audioHostPath.c_str(), mutableCommandLine.data(), nullptr, nullptr, FALSE,
         CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process))
     {
         return;
