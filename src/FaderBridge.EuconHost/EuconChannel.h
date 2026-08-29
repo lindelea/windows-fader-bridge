@@ -20,7 +20,8 @@ public:
     using ChangeHandler = std::function<void(float value,
         NEuCon::uint16 rawIndex, float rawTableValue)>;
 
-    EuconChannel(int channelOrder, const std::wstring& persistenceId,
+    EuconChannel(int channelOrder, NEuCon::int32 channelColor,
+                 const std::wstring& persistenceId,
                  const std::wstring& displayName, ChangeHandler faderHandler,
                  ChangeHandler knobHandler, ChangeHandler muteHandler);
     ~EuconChannel() override;

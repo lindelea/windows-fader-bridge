@@ -17,6 +17,7 @@ provides:
 - per-application peak meters using EUCON Meter API 3.1 with a temporary
   regular-meter compatibility fallback;
 - stable application persistence IDs for EuControl assignments and layouts;
+- stable per-application EUCON channel colors;
 - direct Core Audio writes on an MMCSS worker for low control latency.
 
 The application fader mapping is intentionally linear: table coordinates

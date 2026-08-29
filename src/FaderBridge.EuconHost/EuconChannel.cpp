@@ -39,7 +39,8 @@ float NormalizedToCoordinate(const float value)
 }
 }
 
-EuconChannel::EuconChannel(const int channelOrder, const std::wstring& persistenceId,
+EuconChannel::EuconChannel(const int channelOrder, const NEuCon::int32 channelColor,
+    const std::wstring& persistenceId,
     const std::wstring& displayName, ChangeHandler faderHandler,
     ChangeHandler knobHandler, ChangeHandler muteHandler)
     : channelOrder_(channelOrder),
@@ -53,6 +54,9 @@ EuconChannel::EuconChannel(const int channelOrder, const std::wstring& persisten
     SetAttribute(kATRIBID_TrackType, kTRACK_Audio);
     SetAttribute(kATRIBID_ChannelType, L"Audio");
     SetAttribute(kATRIBID_ChannelOrder, channelOrder);
+    // Getting Started with EuCon 12.9: surface channel color is standard
+    // 0x00RRGGBB track metadata. The surface decides how to render it.
+    SetAttribute2(kATRIBID_ChannelColor, channelColor, false);
     SetPersistenceID(persistenceId);
 
     InitializeFader();

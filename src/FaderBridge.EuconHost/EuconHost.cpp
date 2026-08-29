@@ -23,17 +23,39 @@ constexpr UINT kMotorBurstMergeMs = 10U;
 constexpr auto kVolumeHold = std::chrono::milliseconds(180);
 constexpr auto kMuteHold = std::chrono::milliseconds(120);
 
-std::wstring ApplicationPersistenceId(const std::wstring& key)
+unsigned long long ApplicationIdentityHash(const std::wstring& key)
 {
-    // Stable FNV-1a hash: EuControl layouts/assignments can recognize an app
-    // after process restarts even when its internal CoreAudio slot changes.
     unsigned long long hash = 14695981039346656037ULL;
     for (const auto value : key)
     {
         hash ^= static_cast<unsigned long long>(value);
         hash *= 1099511628211ULL;
     }
-    return L"FaderBridge.WindowsApp." + std::to_wstring(hash);
+    return hash;
+}
+
+std::wstring ApplicationPersistenceId(const std::wstring& key)
+{
+    // Stable FNV-1a hash: EuControl layouts/assignments can recognize an app
+    // after process restarts even when its internal CoreAudio slot changes.
+    return L"FaderBridge.WindowsApp." + std::to_wstring(ApplicationIdentityHash(key));
+}
+
+NEuCon::int32 ApplicationChannelColor(const std::wstring& key)
+{
+    // Saturated colors from the official EuConApp channel color example.
+    // Exclude white and dark greys so every active application is distinct
+    // from the uncolored/default surface state.
+    static constexpr NEuCon::int32 colors[] =
+    {
+        0x000000FF, // blue
+        0x0000FF00, // green
+        0x0000FFFF, // cyan
+        0x00FF0000, // red
+        0x00FF00FF, // magenta
+        0x00FFFF00, // yellow
+    };
+    return colors[ApplicationIdentityHash(key) % std::size(colors)];
 }
 
 template<typename TDataVector>
@@ -164,6 +186,7 @@ std::unique_ptr<EuconHost::TrackState> EuconHost::CreateTrack(const int channelO
     };
 
     track->channel = std::make_unique<EuconChannel>(channelOrder,
+        ApplicationChannelColor(key),
         ApplicationPersistenceId(key), name,
         [report](const float value, const NEuCon::uint16 rawIndex,
             const float rawValue) { report(value, 0, rawIndex, rawValue); },
