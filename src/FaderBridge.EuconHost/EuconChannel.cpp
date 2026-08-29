@@ -7,6 +7,7 @@
 #include "EuLayoutChannel.h"
 #include "EuPrimitiveControl.h"
 #include "EuPrimitiveKnob.h"
+#include "EuPrimitiveMeter.h"
 #include "EuPrimitiveSwitch.h"
 
 #include <algorithm>
@@ -49,6 +50,7 @@ EuconChannel::EuconChannel(const int channelIndex, const std::wstring& persisten
 {
     SetAttribute(kATRIBID_ProcessorType, kProcType_ChannelStrip);
     SetAttribute(kATRIBID_LayoutRule0, kRUL_EuLayoutChannel);
+    SetAttribute(kATRIBID_TrackType, kTRACK_Audio);
     SetAttribute(kATRIBID_ChannelType, L"Audio");
     SetAttribute(kATRIBID_ChannelOrder, channelIndex + 1);
     SetPersistenceID(persistenceId);
@@ -140,11 +142,23 @@ void EuconChannel::InitializeMeter()
 {
     meter_.SetId(MeterId);
     meter_.SetAttribute(kATRIBID_LayoutName0, EuLayoutChannel::kNAM_ChannelLevelMeter);
+    // Keep the regular EUCON meter primitive fully described as a fallback.
+    // Meter API 3.1 ignores NumberOfMetersInChannel, so these attributes do
+    // not interfere with the batched stereo format configured after register.
+    meter_.SetAttribute(kATRIBID_NumberOfMetersInChannel, 1U);
+    meter_.SetAttribute(kATRIBID_MeterType, kMeterType__SamplePeak);
+    meter_.SetMasterMeterType(kMETERTYPE_SignalLevel);
     EuPrimitiveControl* primitive = nullptr;
     if (meter_.GetPrimitive(EuControlMultiMeter::kID_Meter0, &primitive) == kERR_OK && primitive)
     {
         primitive->Initialize(kTYP_Float, 101U);
         primitive->LoadValueTableInterpolated(-120.0F, 0.0F);
+        if (auto* meterPrimitive = dynamic_cast<EuPrimitiveMeter*>(primitive))
+        {
+            meterPrimitive->SetMeterType(kMETERTYPE_SignalLevel);
+            meterPrimitive->SetRole(kMTR_Mono);
+            meterPrimitive->SetMeterPositionMode(kMeterThermometerUp);
+        }
     }
     AddControl(meter_);
     meter_.SetUserData(kMETERTYPE_SignalLevel, this);
@@ -297,6 +311,18 @@ void EuconChannel::WriteMeterDb(EuBatchedMeterWriter& writer, const float valueD
             meter_.GetFormat(format, roles) != kERR_OK ||
             handle == kEuInvalidVisibilityHandle || format == kEuInvalidMeterFormat)
         {
+            // Some EuControl/S3 combinations recognize dynamically rebuilt
+            // processors but do not send VisibilityChangedV2. The ordinary
+            // meter primitive remains supported and was the verified path in
+            // the initial hardware baseline, so keep the LED live while the
+            // 3.1 visibility handle is unavailable.
+            EuPrimitiveControl* primitive = nullptr;
+            if (meter_.GetPrimitive(EuControlMultiMeter::kID_Meter0, &primitive) == kERR_OK &&
+                primitive)
+            {
+                primitive->SetCurrentValue(std::clamp(valueDb, -120.0F, 0.0F));
+                primitive->Refresh();
+            }
             return;
         }
         SetMeterVisibility(true, handle, format);

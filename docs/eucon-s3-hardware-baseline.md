@@ -85,6 +85,26 @@ Do not simplify or reorder this pipeline without an S3 A/B test:
    clip state.
 7. Send only visible meters with valid handles.
 
+`FaderBridge.EuconHost` also initializes the ordinary meter primitive as a
+compatibility path. On the verified EuControl/S3 stack, dynamically added
+application processors do not always receive a `VisibilityChangedV2` handle.
+While the handle is invalid, the host writes the same dB peak to that primitive;
+the 3.1 batched path takes over whenever a valid handle is available. The legacy
+`kATRIBID_NumberOfMetersInChannel` attribute is used only for this fallback and
+is ignored by Meter API 3.1.
+
+## Dynamic application topology invariant
+
+The production host registers one top-level EUCON node and keeps it alive for
+the lifetime of the process. Active Windows applications are represented by
+channel processors added or removed inside `Freeze()` / `Thaw()` updates.
+
+Do not unregister and rebuild the top-level node when the Windows application
+list changes. On EuControl 2026.4 that caused the S3 to lose the application
+entirely: faders, OLEDs, knobs, switches, and meters all stopped responding.
+The persistent-node design plus the meter fallback was verified on the physical
+S3 on 2026-08-29; all controls and LED meters operated normally.
+
 The complete `ExNode`, `ExProcessorChannel`, and meter thread from `EuConApp`
 are part of the working hardware contract. Valid values alone were not enough
 to make the old minimal probe's CH1 reliable.

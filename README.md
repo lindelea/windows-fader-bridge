@@ -14,7 +14,8 @@ provides:
 - one virtual EUCON channel per active Windows audio application;
 - S3 banking beyond the 16 physical faders;
 - bidirectional fader, encoder, mute, OLED label and position-ring sync;
-- per-application peak meters using EUCON Meter API 3.1;
+- per-application peak meters using EUCON Meter API 3.1 with an S3-compatible
+  regular-meter fallback;
 - stable application persistence IDs for EuControl assignments and layouts;
 - direct Core Audio writes on an MMCSS worker for low control latency.
 
