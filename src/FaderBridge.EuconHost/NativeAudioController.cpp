@@ -66,6 +66,138 @@ IPolicyConfig : public IUnknown
 const CLSID CLSID_PolicyConfigClient =
 { 0x870af99c, 0x171d, 0x4f9e, { 0xaf, 0x0d, 0xe6, 0x3d, 0xf4, 0x0c, 0x2b, 0xc9 } };
 
+// Windows 11's Volume Mixer uses this internal WinRT policy interface for
+// per-application input/output routing. Microsoft changed the IID in Windows
+// 10 21H2; keep both known contracts behind one isolated compatibility class.
+// The ABI was verified read-only on the current host before integration.
+MIDL_INTERFACE("ab3d4648-e242-459f-b02f-541c70306324")
+IAudioPolicyConfigFactoryCurrent : public IInspectable
+{
+    virtual HRESULT STDMETHODCALLTYPE Reserved01() = 0;
+    virtual HRESULT STDMETHODCALLTYPE Reserved02() = 0;
+    virtual HRESULT STDMETHODCALLTYPE Reserved03() = 0;
+    virtual HRESULT STDMETHODCALLTYPE Reserved04() = 0;
+    virtual HRESULT STDMETHODCALLTYPE Reserved05() = 0;
+    virtual HRESULT STDMETHODCALLTYPE Reserved06() = 0;
+    virtual HRESULT STDMETHODCALLTYPE Reserved07() = 0;
+    virtual HRESULT STDMETHODCALLTYPE Reserved08() = 0;
+    virtual HRESULT STDMETHODCALLTYPE Reserved09() = 0;
+    virtual HRESULT STDMETHODCALLTYPE Reserved10() = 0;
+    virtual HRESULT STDMETHODCALLTYPE Reserved11() = 0;
+    virtual HRESULT STDMETHODCALLTYPE Reserved12() = 0;
+    virtual HRESULT STDMETHODCALLTYPE Reserved13() = 0;
+    virtual HRESULT STDMETHODCALLTYPE Reserved14() = 0;
+    virtual HRESULT STDMETHODCALLTYPE Reserved15() = 0;
+    virtual HRESULT STDMETHODCALLTYPE Reserved16() = 0;
+    virtual HRESULT STDMETHODCALLTYPE Reserved17() = 0;
+    virtual HRESULT STDMETHODCALLTYPE Reserved18() = 0;
+    virtual HRESULT STDMETHODCALLTYPE Reserved19() = 0;
+    virtual HRESULT STDMETHODCALLTYPE SetPersistedDefaultAudioEndpoint(
+        UINT32 processId, EDataFlow flow, ERole role, HSTRING deviceId) = 0;
+    virtual HRESULT STDMETHODCALLTYPE GetPersistedDefaultAudioEndpoint(
+        UINT32 processId, EDataFlow flow, ERole role, HSTRING* deviceId) = 0;
+    virtual HRESULT STDMETHODCALLTYPE ClearAllPersistedApplicationDefaultEndpoints() = 0;
+};
+
+class PerApplicationAudioPolicy final
+{
+public:
+    bool Initialize()
+    {
+        constexpr wchar_t runtimeClass[] = L"Windows.Media.Internal.AudioPolicyConfig";
+        HSTRING className = nullptr;
+        auto result = WindowsCreateString(runtimeClass,
+            static_cast<UINT32>(std::size(runtimeClass) - 1U), &className);
+        void* raw = nullptr;
+        if (SUCCEEDED(result))
+        {
+            result = RoGetActivationFactory(className,
+                __uuidof(IAudioPolicyConfigFactoryCurrent), &raw);
+        }
+        if (FAILED(result))
+        {
+            static const IID downlevelIid =
+            { 0x2a59116d, 0x6c4f, 0x45e0,
+              { 0xa7, 0x4f, 0x70, 0x7e, 0x3f, 0xef, 0x92, 0x58 } };
+            result = RoGetActivationFactory(className, downlevelIid, &raw);
+        }
+        if (className) WindowsDeleteString(className);
+        if (SUCCEEDED(result) && raw)
+        {
+            policy_.Attach(reinterpret_cast<IAudioPolicyConfigFactoryCurrent*>(raw));
+        }
+        FB_TRACE("APP_ROUTE_POLICY_INIT hr=%08X ready=%d",
+            static_cast<unsigned>(result), policy_ ? 1 : 0);
+        return policy_ != nullptr;
+    }
+
+    std::wstring Get(const DWORD processId, const EDataFlow flow) const
+    {
+        if (!policy_ || processId == 0U) return {};
+        HSTRING packedId = nullptr;
+        const auto result = policy_->GetPersistedDefaultAudioEndpoint(
+            processId, flow, eConsole, &packedId);
+        std::wstring value;
+        if (SUCCEEDED(result) && packedId)
+        {
+            UINT32 length = 0U;
+            const auto* text = WindowsGetStringRawBuffer(packedId, &length);
+            value.assign(text, length);
+            WindowsDeleteString(packedId);
+        }
+        constexpr wchar_t prefix[] = L"\\\\?\\SWD#MMDEVAPI#";
+        constexpr wchar_t renderSuffix[] = L"#{e6327cad-dcec-4949-ae8a-991e976a79d2}";
+        constexpr wchar_t captureSuffix[] = L"#{2eef81be-33fa-4800-9670-1cd474972c3f}";
+        if (value.rfind(prefix, 0U) == 0U) value.erase(0U, std::size(prefix) - 1U);
+        const auto& suffix = flow == eRender ? renderSuffix : captureSuffix;
+        const auto suffixLength = flow == eRender
+            ? std::size(renderSuffix) - 1U : std::size(captureSuffix) - 1U;
+        if (value.size() >= suffixLength &&
+            value.compare(value.size() - suffixLength, suffixLength, suffix) == 0)
+        {
+            value.resize(value.size() - suffixLength);
+        }
+        return value;
+    }
+
+    bool Set(const DWORD processId, const EDataFlow flow,
+        const std::wstring& endpointId) const
+    {
+        if (!policy_ || processId == 0U) return false;
+        HSTRING packedId = nullptr;
+        std::wstring packed;
+        if (!endpointId.empty())
+        {
+            packed = L"\\\\?\\SWD#MMDEVAPI#" + endpointId +
+                (flow == eRender ? L"#{e6327cad-dcec-4949-ae8a-991e976a79d2}" :
+                    L"#{2eef81be-33fa-4800-9670-1cd474972c3f}");
+            if (FAILED(WindowsCreateString(packed.c_str(),
+                static_cast<UINT32>(packed.size()), &packedId)))
+            {
+                return false;
+            }
+        }
+        const auto console = policy_->SetPersistedDefaultAudioEndpoint(
+            processId, flow, eConsole, packedId);
+        const auto multimedia = policy_->SetPersistedDefaultAudioEndpoint(
+            processId, flow, eMultimedia, packedId);
+        const auto communications = policy_->SetPersistedDefaultAudioEndpoint(
+            processId, flow, eCommunications, packedId);
+        if (packedId) WindowsDeleteString(packedId);
+        const auto changed = SUCCEEDED(console) && SUCCEEDED(multimedia) &&
+            SUCCEEDED(communications);
+        FB_TRACE("APP_ROUTE_POLICY_SET pid=%u flow=%s endpoint=%ls console=%08X multimedia=%08X communications=%08X changed=%d",
+            static_cast<unsigned>(processId), flow == eRender ? "render" : "capture",
+            endpointId.empty() ? L"default" : endpointId.c_str(),
+            static_cast<unsigned>(console), static_cast<unsigned>(multimedia),
+            static_cast<unsigned>(communications), changed ? 1 : 0);
+        return changed;
+    }
+
+private:
+    ComPtr<IAudioPolicyConfigFactoryCurrent> policy_;
+};
+
 enum class SlotKind
 {
     Empty,
@@ -963,6 +1095,7 @@ struct NativeAudioController::Impl
     struct Session
     {
         DWORD processId = 0;
+        std::wstring endpointId;
         bool persistentAppIdentity = false;
         bool volumeObserved = false;
         float lastObservedVolume = 0.0F;
@@ -1008,6 +1141,8 @@ struct NativeAudioController::Impl
         bool isDefault = false;
         std::wstring preferredVolumeSession;
         std::wstring preferredMuteSession;
+        std::wstring outputRouteId;
+        std::wstring inputRouteId;
         std::chrono::steady_clock::time_point lastSeen{};
     };
 
@@ -1028,6 +1163,7 @@ struct NativeAudioController::Impl
     std::wstring soloTargetKey;
     std::unordered_map<std::wstring, bool> preSoloMutes;
     MonoAudioSetting monoAudioSetting;
+    PerApplicationAudioPolicy applicationRoutePolicy;
     HANDLE wakeEvent = nullptr;
     std::atomic_bool* changePending = nullptr;
     std::atomic_bool* discoveryPending = nullptr;
@@ -1170,6 +1306,7 @@ struct NativeAudioController::Impl
     bool Initialize()
     {
         monoAudioSetting.Initialize();
+        applicationRoutePolicy.Initialize();
         if (FAILED(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
             IID_PPV_ARGS(&enumerator))))
         {
@@ -1229,23 +1366,42 @@ struct NativeAudioController::Impl
 
     bool RefreshApplications()
     {
-        ComPtr<IAudioSessionEnumerator> sessionEnumerator;
-        if (!manager || FAILED(manager->GetSessionEnumerator(&sessionEnumerator)))
+        struct SessionSource
         {
-            return false;
-        }
-
-        int count = 0;
-        if (FAILED(sessionEnumerator->GetCount(&count)))
+            std::wstring endpointId;
+            ComPtr<IAudioSessionEnumerator> enumerator;
+        };
+        std::vector<SessionSource> sources;
+        for (const auto& endpointSlot : slots)
         {
-            return false;
+            if (endpointSlot.kind != SlotKind::RenderEndpoint ||
+                !endpointSlot.endpointDevice)
+            {
+                continue;
+            }
+            ComPtr<IAudioSessionManager2> endpointManager;
+            ComPtr<IAudioSessionEnumerator> sessionEnumerator;
+            if (SUCCEEDED(endpointSlot.endpointDevice->Activate(
+                    __uuidof(IAudioSessionManager2), CLSCTX_ALL, nullptr,
+                    reinterpret_cast<void**>(endpointManager.GetAddressOf()))) &&
+                endpointManager &&
+                SUCCEEDED(endpointManager->GetSessionEnumerator(&sessionEnumerator)) &&
+                sessionEnumerator)
+            {
+                sources.push_back({ endpointSlot.endpointId, std::move(sessionEnumerator) });
+            }
         }
+        if (sources.empty()) return false;
 
         std::map<std::wstring, Application> applications;
-        for (int index = 0; index < count; ++index)
+        for (auto& source : sources)
         {
+            int count = 0;
+            if (FAILED(source.enumerator->GetCount(&count))) continue;
+            for (int index = 0; index < count; ++index)
+            {
             ComPtr<IAudioSessionControl> control;
-            if (FAILED(sessionEnumerator->GetSession(index, &control)))
+            if (FAILED(source.enumerator->GetSession(index, &control)))
             {
                 continue;
             }
@@ -1314,6 +1470,7 @@ struct NativeAudioController::Impl
             }
             Session session;
             session.processId = processId;
+            session.endpointId = source.endpointId;
             session.persistentAppIdentity = persistentAppIdentity;
             session.identifier = std::move(identifier);
             session.control = std::move(control);
@@ -1321,6 +1478,7 @@ struct NativeAudioController::Impl
             session.channelVolume = std::move(channelVolume);
             session.meter = std::move(meter);
             app.sessions.push_back(std::move(session));
+            }
         }
 
         const auto now = std::chrono::steady_clock::now();
@@ -1344,7 +1502,8 @@ struct NativeAudioController::Impl
                         [&refreshed](const Session& session)
                         {
                             return !refreshed.identifier.empty() &&
-                                session.identifier == refreshed.identifier;
+                                session.identifier == refreshed.identifier &&
+                                session.endpointId == refreshed.endpointId;
                         });
                     if (previous != slot.sessions.end())
                     {
@@ -1353,9 +1512,11 @@ struct NativeAudioController::Impl
                         // notification gap that is visible during fast moves.
                         const auto processId = refreshed.processId;
                         const auto persistentAppIdentity = refreshed.persistentAppIdentity;
+                        const auto endpointId = refreshed.endpointId;
                         refreshed = std::move(*previous);
                         refreshed.processId = processId;
                         refreshed.persistentAppIdentity = persistentAppIdentity;
+                        refreshed.endpointId = endpointId;
                     }
                     else
                     {
@@ -1400,6 +1561,16 @@ struct NativeAudioController::Impl
                 RegisterSession(session);
             }
             empty->lastSeen = now;
+        }
+        for (auto& slot : slots)
+        {
+            if (slot.kind != SlotKind::Application || slot.sessions.empty()) continue;
+            const auto preferred = std::find_if(slot.sessions.begin(), slot.sessions.end(),
+                [](const Session& session) { return session.persistentAppIdentity; });
+            const auto processId = (preferred != slot.sessions.end() ? preferred :
+                slot.sessions.begin())->processId;
+            slot.outputRouteId = applicationRoutePolicy.Get(processId, eRender);
+            slot.inputRouteId = applicationRoutePolicy.Get(processId, eCapture);
         }
         return true;
     }
@@ -1605,6 +1776,60 @@ struct NativeAudioController::Impl
                 RefreshApplications();
             }
         }
+        return changed;
+    }
+
+    bool ApplyApplicationRoute(const std::wstring& trackKey, const bool capture,
+        const std::wstring& endpointId)
+    {
+        const auto application = std::find_if(slots.begin(), slots.end(),
+            [&trackKey](const Slot& slot)
+            {
+                return slot.kind == SlotKind::Application && slot.key == trackKey;
+            });
+        if (application == slots.end() || application->sessions.empty())
+        {
+            FB_TRACE("APP_ROUTE_REJECT key=%ls reason=no-session", trackKey.c_str());
+            return false;
+        }
+        if (!endpointId.empty())
+        {
+            const auto requiredKind = capture ? SlotKind::CaptureEndpoint :
+                SlotKind::RenderEndpoint;
+            const auto endpointFound = std::any_of(slots.begin(), slots.end(),
+                [&endpointId, requiredKind](const Slot& slot)
+                {
+                    return slot.kind == requiredKind && slot.endpointId == endpointId;
+                });
+            if (!endpointFound)
+            {
+                FB_TRACE("APP_ROUTE_REJECT key=%ls reason=endpoint flow=%s id=%ls",
+                    trackKey.c_str(), capture ? "capture" : "render", endpointId.c_str());
+                return false;
+            }
+        }
+
+        std::vector<DWORD> processIds;
+        bool changed = false;
+        for (const auto& session : application->sessions)
+        {
+            if (session.processId == 0U || std::find(processIds.begin(), processIds.end(),
+                    session.processId) != processIds.end())
+            {
+                continue;
+            }
+            processIds.push_back(session.processId);
+            changed = applicationRoutePolicy.Set(session.processId,
+                capture ? eCapture : eRender, endpointId) || changed;
+        }
+        if (changed)
+        {
+            (capture ? application->inputRouteId : application->outputRouteId) = endpointId;
+        }
+        FB_TRACE("APP_ROUTE key=%ls flow=%s endpoint=%ls pids=%u changed=%d",
+            trackKey.c_str(), capture ? "capture" : "render",
+            endpointId.empty() ? L"default" : endpointId.c_str(),
+            static_cast<unsigned>(processIds.size()), changed ? 1 : 0);
         return changed;
     }
 
@@ -1860,6 +2085,22 @@ struct NativeAudioController::Impl
         auto frame = std::make_unique<AudioFrame>();
         monoAudioSetting.Get(frame->monoAudioEnabled);
         frame->anySolo = soloActive;
+        for (const auto& slot : slots)
+        {
+            if ((slot.kind != SlotKind::RenderEndpoint &&
+                    slot.kind != SlotKind::CaptureEndpoint) ||
+                slot.endpointId.empty() || !slot.endpointVolume)
+            {
+                continue;
+            }
+            AudioRouteOption option;
+            option.id = slot.endpointId;
+            option.name = slot.name;
+            option.color = slot.channelColor == AudioStripState::NoChannelColor
+                ? 0x00FFFFFFU : slot.channelColor;
+            (slot.kind == SlotKind::RenderEndpoint ? frame->outputRoutes :
+                frame->inputRoutes).push_back(std::move(option));
+        }
         frame->strips.reserve(StripCount);
         for (int index = 0; index < StripCount; ++index)
         {
@@ -1888,6 +2129,8 @@ struct NativeAudioController::Impl
                 : AudioStripRole::Application;
             if (slot.kind == SlotKind::Application)
             {
+                strip.outputRouteId = slot.outputRouteId;
+                strip.inputRouteId = slot.inputRouteId;
                 strip.focusExecutablePath = slot.focusExecutablePath;
                 strip.focusPackageFamilyName = slot.focusPackageFamilyName;
                 strip.focusProcessIds.reserve(slot.sessions.size());
@@ -2259,6 +2502,23 @@ bool NativeAudioController::QueueClearSolo()
     return true;
 }
 
+bool NativeAudioController::QueueApplicationRoute(const std::wstring& trackKey,
+    const bool capture, const std::wstring& endpointId)
+{
+    if (!running_ || trackKey.empty()) return false;
+    try
+    {
+        const std::scoped_lock lock(routeCommandMutex_);
+        pendingRouteCommands_.push_back({ trackKey, capture, endpointId });
+    }
+    catch (...)
+    {
+        return false;
+    }
+    SetEvent(wakeEvent_);
+    return true;
+}
+
 void NativeAudioController::Run()
 {
     if (FAILED(CoInitializeEx(nullptr, COINIT_MULTITHREADED)))
@@ -2361,6 +2621,21 @@ void NativeAudioController::Run()
             if (accepted)
             {
                 sessionChangePending_.store(true, std::memory_order_release);
+            }
+        }
+
+        std::vector<RouteCommand> routeCommands;
+        {
+            const std::scoped_lock lock(routeCommandMutex_);
+            routeCommands.swap(pendingRouteCommands_);
+        }
+        for (const auto& command : routeCommands)
+        {
+            if (impl_->ApplyApplicationRoute(command.trackKey, command.capture,
+                command.endpointId))
+            {
+                sessionChangePending_.store(true, std::memory_order_release);
+                sessionDiscoveryPending_.store(true, std::memory_order_release);
             }
         }
 

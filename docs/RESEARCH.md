@@ -79,6 +79,37 @@ Future resilience work should replace periodic discovery with session/device
 notifications and treat endpoint removal, sleep/resume, and Audio Service restart
 as normal state transitions.
 
+## Windows application controls
+
+The upper EUCON knob area is modeled as the selected application's parameter
+rack, not as device-specific S3 controls. The first implementation uses the
+documented Windows `GlobalSystemMediaTransportControlsSessionManager` for media
+transport/state and Win32 top-level-window APIs for focus, minimize,
+maximize/restore, and topmost state. GSMTC matching requires the media session's
+source application ID to match the track package family or executable identity;
+there is deliberately no fallback to the global current media session.
+
+Windows endpoint enhancement properties and OEM APO controls are not part of
+this implementation. Microsoft documents endpoint properties as client-readable
+and driver effects are not a stable per-application control contract. Apollo or
+other vendor processing remains owned by its control-room software. Future
+application profiles may add explicit, user-configured shortcuts, but commands
+without readable state must remain momentary and must not claim persistent LED
+feedback.
+
+The first mixed-player test on 2026-08-29 showed why media controls cannot be a
+fixed seven-cell page. Apple Music published readable timeline state while its
+GSMTC capability flags rejected position, shuffle, and repeat writes; foobar2000
+published no identity-matched GSMTC session; and Chromium could publish multiple
+sessions with the same source application ID. The adapter now treats the
+session's playback-control flags as authoritative, preserves a readable timeline
+as a non-interactive position cell when seeking is unavailable, dynamically omits
+unsupported actions, prefers Windows' current matching session and then a playing/paused
+matching session, and requests title/artist metadata asynchronously. A legacy
+`WM_APPCOMMAND` fallback is intentionally not automatic because Windows exposes
+no capability query or authoritative state for it; an explicit compatibility
+profile may provide that later without pretending unsupported feedback exists.
+
 ## External references
 
 - Microsoft Core Audio `IAudioSessionManager2` and `IAudioMeterInformation`

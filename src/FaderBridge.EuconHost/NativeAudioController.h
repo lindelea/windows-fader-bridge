@@ -42,6 +42,13 @@ enum class AudioMeterRole
     HeightRightSurround,
 };
 
+struct AudioRouteOption
+{
+    std::wstring id;
+    std::wstring name;
+    std::uint32_t color = 0x00FFFFFFU;
+};
+
 struct AudioStripState
 {
     static constexpr std::uint32_t NoChannelColor = 0xFFFFFFFFU;
@@ -72,11 +79,15 @@ struct AudioStripState
     std::vector<DWORD> focusProcessIds;
     std::wstring focusExecutablePath;
     std::wstring focusPackageFamilyName;
+    std::wstring outputRouteId;
+    std::wstring inputRouteId;
 };
 
 struct AudioFrame
 {
     std::vector<AudioStripState> strips;
+    std::vector<AudioRouteOption> outputRoutes;
+    std::vector<AudioRouteOption> inputRoutes;
     bool monoAudioEnabled = false;
     bool anySolo = false;
 };
@@ -102,6 +113,8 @@ public:
     bool QueueToggleMonoAudio() noexcept;
     bool QueueToggleSolo(const std::wstring& trackKey);
     bool QueueClearSolo();
+    bool QueueApplicationRoute(const std::wstring& trackKey, bool capture,
+        const std::wstring& endpointId);
     bool IsReady() const noexcept { return ready_.load(); }
 
 private:
@@ -131,6 +144,14 @@ private:
     };
     std::mutex soloCommandMutex_;
     std::vector<SoloCommand> pendingSoloCommands_;
+    struct RouteCommand
+    {
+        std::wstring trackKey;
+        bool capture = false;
+        std::wstring endpointId;
+    };
+    std::mutex routeCommandMutex_;
+    std::vector<RouteCommand> pendingRouteCommands_;
     HANDLE wakeEvent_ = nullptr;
     std::thread worker_;
     std::unique_ptr<Impl> impl_;

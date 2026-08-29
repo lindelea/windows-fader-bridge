@@ -103,6 +103,39 @@ Each track exposes standard EUCON semantics where applicable:
 - level meter with negotiated format;
 - standard knob sets or knob maps only when their semantics match.
 
+## Application channel knob sets
+
+Application tracks publish one top-level `EuControlKnobCellArray`. The node
+declares `kSupportsNumberOfChildrenAttribute`, and every top-level cell reports
+its actual child count. Standard Input, Pan, and Mix pages retain their EUCON
+semantics for Windows per-application input routing, channel balance, and output
+routing. Inserts, Dynamics, EQ, Aux Send, and Group are blank because Windows
+does not supply those channel semantics.
+
+Application-specific controls use the documented optional second page:
+
+- knob set 9 (`Media`) uses
+  `GlobalSystemMediaTransportControlsSessionManager` and exposes play/pause,
+  previous, next, stop, normalized timeline position, shuffle, and repeat;
+- knob set 11 (`Quick`) retains session volume and adds volume/pan reset,
+  default input/output routing, unmute, and clear-solo operations;
+- knob set 13 (`Window`) exposes focus, minimize, maximize/restore, and
+  topmost state through Win32 window APIs.
+
+The knob sets belong to the logical application processor, not an S3. EUCON
+owns their placement on S3, S4/S6, S1, Dock, and Avid Control. Knob-cell lower
+switch LEDs are application-owned feedback: window and GSMTC state are sampled
+only for the attentioned/selected application at 200 ms intervals. Media
+sessions are matched to the selected application by package family or executable
+identity; Fader Bridge never falls back to an unrelated system-current session.
+Unsupported GSMTC capabilities reject the command instead of simulating a
+keyboard action or displaying false state.
+
+The initial custom-page implementation builds and starts successfully with the
+Windows 11 26100 C++/WinRT projection and EUCON SDK 2026.4. Physical S3 and Avid
+Control navigation, switch placement, LEDs, and media-session matching remain
+required verification before this becomes a committed baseline.
+
 ## Application commands and Windows mono audio
 
 Windows' global accessibility mono mix is application-wide state, not a
@@ -288,6 +321,7 @@ regression-tested for this workflow.
 | Application Solo / Clear Solo | Verified | Application channels use standard Solo semantics; the Windows worker performs single-target intercancel muting and restores the pre-Solo mute snapshot. The standard System Clear Solo and an assignable command share authoritative state and LED feedback. Endpoint channels are excluded. |
 | Select / Attention | Verified on S3 | Standard channel Select drives one-of-N Windows application activation; off minimizes the selected application. Surface-owned AttentionedTrackPID is consumed on the UI thread. PID, package-family, and executable matching cover helper/worker processes without device-specific code. |
 | Application and output Pan / balance | Verified on S3 | Stereo application sessions use independent `IChannelAudioVolume` factors; stereo render endpoints use absolute `IAudioEndpointVolume` channel scalars capped by Master. Both expose the predefined Pan knob set and knob-top Center reset. Capture and non-stereo tracks are excluded. Avid Control remains to be tested. |
+| Application custom knob sets | Awaiting hardware verification | Custom pages 9/11/13 expose Media, Quick Controls, and Window operations. Media cells are generated from each GSMTC session's advertised read/write capabilities using the documented knob-array `Freeze` / `Remove` / `PushBack` / `Thaw` lifecycle. A readable but non-seekable timeline is retained as a read-only position cell; unsupported actions are absent. Metadata is fetched asynchronously and published as title/artist label cells. Session matching prefers the Windows current session and then active playback among identity-matched sessions; no unrelated global-session fallback is allowed. |
 | Volume knob semantics | Needs work | Volume currently borrows the predefined Input knob-set layout. Confirm the correct standard model or use an official knob-map strategy. |
 | Meter API 3.1 | Verified | Windows supplies true per-leg peaks and endpoint channel roles. Tracks declare dynamic stereo/mono formats, save `VisibilityChangedV2` handles, and use `EuBatchedMeterWriter`; observed batched calls returned success. The ordinary write is isolated to startup/no-handle compatibility. |
 | Device-derived behavior | Needs review | Forced refresh and overtravel rebound came from hardware testing. Classify them as generic application policy or remove them after cross-surface tests. |

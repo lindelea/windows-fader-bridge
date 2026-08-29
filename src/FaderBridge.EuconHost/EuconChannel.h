@@ -9,6 +9,7 @@
 #include "EuProcessor.h"
 
 #include <atomic>
+#include <array>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -22,6 +23,36 @@ class EuconChannel final : public EuProcessor
 public:
     using ChangeHandler = std::function<void(float value,
         NEuCon::uint16 rawIndex, float rawTableValue)>;
+    using RouteHandler = std::function<void(const std::wstring& endpointId)>;
+    enum class AppAction
+    {
+        ResetVolume,
+        ResetPan,
+        DefaultOutput,
+        DefaultInput,
+        Unmute,
+        ClearSolo,
+        WindowFocus,
+        WindowMinimize,
+        WindowMaximize,
+        WindowTopmost,
+        MediaPlayPause,
+        MediaPrevious,
+        MediaNext,
+        MediaStop,
+        MediaSeek,
+        MediaShuffle,
+        MediaRepeat,
+    };
+    using AppActionHandler = std::function<void(AppAction action, float value,
+        NEuCon::uint16 rawIndex, float rawTableValue)>;
+
+    struct RouteOption
+    {
+        std::wstring id;
+        std::wstring name;
+        NEuCon::int32 color = 0x00FFFFFF;
+    };
 
     EuconChannel(int channelOrder, NEuCon::int32 channelColor,
                  const std::wstring& persistenceId,
@@ -31,6 +62,8 @@ public:
                  ChangeHandler muteHandler,
                  ChangeHandler soloHandler = {}, ChangeHandler selectHandler = {},
                  ChangeHandler recordArmHandler = {},
+                 RouteHandler outputRouteHandler = {}, RouteHandler inputRouteHandler = {},
+                 AppActionHandler appActionHandler = {},
                  NEuCon::int32 trackType = 0,
                  const std::wstring& channelType = L"Audio");
     ~EuconChannel() override;
@@ -45,7 +78,17 @@ public:
     void SetSoloed(bool soloed);
     void SetSelected(bool selected);
     void SetRecordArmed(bool armed);
+    void SetRouteOptions(const std::vector<RouteOption>& outputOptions,
+        const std::wstring& selectedOutputId,
+        const std::vector<RouteOption>& inputOptions,
+        const std::wstring& selectedInputId);
     void SetTrackMetadata(NEuCon::int32 trackType, const std::wstring& channelType);
+    void SetWindowState(bool available, bool foreground, bool minimized,
+        bool maximized, bool topmost);
+    void SetMediaState(bool available, bool playing, bool canPlayPause,
+        bool canPrevious, bool canNext, bool canStop, bool hasPosition, bool canSeek,
+        bool canShuffle, bool shuffle, bool canRepeat, int repeatMode,
+        float position, const std::wstring& title, const std::wstring& artist);
     void PostRegisterMeterInitialization(bool forceMono,
         const std::vector<NEuCon::uint32>& roles);
     void ConfigureMeter(bool forceMono, const std::vector<NEuCon::uint32>& roles);
@@ -70,6 +113,11 @@ private:
         SoloId,
         SelectId,
         RecordArmId,
+        TopLevelKnobSetId,
+        OutputRouteKnobSetId,
+        InputRouteKnobSetId,
+        WindowKnobSetId,
+        MediaKnobSetId,
     };
 
     void InitializeFader();
@@ -81,6 +129,31 @@ private:
     void InitializeSolo();
     void InitializeSelect();
     void InitializeRecordArm();
+    void InitializeRouteKnobSets();
+    void InitializeTopLevelKnobSet();
+    void InitializeApplicationKnobSets();
+    void RebuildRouteKnobSet(EuControlKnobCellArray& knobSet,
+        std::vector<std::unique_ptr<EuControlKnobCell>>& cells,
+        std::vector<NEuCon::uint32>& memberIds,
+        const std::vector<RouteOption>& options, const std::wstring& selectedId,
+        bool output);
+    void UpdateRouteSelection(bool output, const std::wstring& selectedId);
+    enum class MediaCellKind
+    {
+        Title,
+        Artist,
+        PlayPause,
+        Previous,
+        Next,
+        Stop,
+        Position,
+        Seek,
+        Shuffle,
+        Repeat,
+    };
+    void RebuildMediaKnobSet(const std::vector<MediaCellKind>& desiredKinds,
+        const std::wstring& title, const std::wstring& artist);
+    void UpdateMediaLabel(MediaCellKind kind, const std::wstring& text);
 
     std::atomic<int> channelOrder_;
     ChangeHandler faderHandler_;
@@ -91,6 +164,9 @@ private:
     ChangeHandler soloHandler_;
     ChangeHandler selectHandler_;
     ChangeHandler recordArmHandler_;
+    RouteHandler outputRouteHandler_;
+    RouteHandler inputRouteHandler_;
+    AppActionHandler appActionHandler_;
 
     EuControlFader fader_;
     EuControlTextDisplay name_;
@@ -100,6 +176,30 @@ private:
     EuControlKnobCell knob_;
     EuControlKnobCellArray panKnobSet_;
     EuControlKnobCell panKnob_;
+    EuControlKnobCellArray outputRouteKnobSet_;
+    EuControlKnobCellArray inputRouteKnobSet_;
+    EuControlKnobCellArray topLevelKnobSet_;
+    EuControlKnobCellArray windowKnobSet_;
+    EuControlKnobCellArray mediaKnobSet_;
+    std::array<std::unique_ptr<EuControlKnobCell>, 16> topLevelKnobs_;
+    std::array<NEuCon::uint32, 16> topLevelMemberIds_{};
+    std::array<std::unique_ptr<EuControlKnobCell>, 5> quickActionCells_;
+    std::array<NEuCon::uint32, 5> quickActionMemberIds_{};
+    std::array<std::unique_ptr<EuControlKnobCell>, 4> windowCells_;
+    std::array<NEuCon::uint32, 4> windowMemberIds_{};
+    std::vector<std::unique_ptr<EuControlKnobCell>> mediaCells_;
+    std::vector<NEuCon::uint32> mediaMemberIds_;
+    std::vector<MediaCellKind> mediaKinds_;
+    std::mutex mediaMutex_;
+    std::vector<std::unique_ptr<EuControlKnobCell>> outputRouteCells_;
+    std::vector<std::unique_ptr<EuControlKnobCell>> inputRouteCells_;
+    std::vector<NEuCon::uint32> outputRouteMemberIds_;
+    std::vector<NEuCon::uint32> inputRouteMemberIds_;
+    std::vector<RouteOption> outputRouteOptions_;
+    std::vector<RouteOption> inputRouteOptions_;
+    std::wstring selectedOutputRouteId_;
+    std::wstring selectedInputRouteId_;
+    std::mutex routeMutex_;
     std::unique_ptr<EuControlSwitch> solo_;
     std::unique_ptr<EuControlSwitch> select_;
     std::unique_ptr<EuControlSwitch> recordArm_;

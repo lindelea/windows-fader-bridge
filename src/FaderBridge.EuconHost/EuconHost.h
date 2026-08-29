@@ -12,6 +12,7 @@
 
 class EuconChannel;
 class WindowsCommandProcessor;
+class WindowsMediaController;
 class WindowsSystemProcessor;
 
 constexpr UINT kSurfaceChangeMessage = WM_APP + 1;
@@ -86,6 +87,20 @@ private:
         std::chrono::steady_clock::time_point volumeHoldUntil{};
         std::chrono::steady_clock::time_point panHoldUntil{};
         std::chrono::steady_clock::time_point muteHoldUntil{};
+        std::chrono::steady_clock::time_point appControlRefreshAt{};
+        bool windowAvailable = false;
+        bool windowForeground = false;
+        bool windowMinimized = false;
+        bool windowMaximized = false;
+        bool windowTopmost = false;
+        bool mediaAvailable = false;
+        bool mediaPlaying = false;
+        unsigned int mediaCapabilities = 0;
+        bool mediaShuffle = false;
+        int mediaRepeatMode = 0;
+        float mediaPosition = 0.0F;
+        std::wstring mediaTitle;
+        std::wstring mediaArtist;
     };
 
     struct TrackRoute
@@ -108,6 +123,7 @@ private:
     std::unique_ptr<FaderBridgeNode> node_;
     std::unique_ptr<WindowsCommandProcessor> commandProcessor_;
     std::unique_ptr<WindowsSystemProcessor> systemProcessor_;
+    std::unique_ptr<WindowsMediaController> mediaController_;
     std::vector<std::unique_ptr<TrackState>> tracks_;
     std::unique_ptr<NativeAudioController> audioController_;
     bool motorFlushTimerActive_ = false;
@@ -121,4 +137,5 @@ private:
     void ReconcileChannelTopology(const AudioFrame& frame);
     bool SelectAndFocusTrack(TrackState& track);
     bool DeselectAndMinimizeTrack(TrackState& track);
+    void RefreshApplicationControls(TrackState& track, bool force);
 };

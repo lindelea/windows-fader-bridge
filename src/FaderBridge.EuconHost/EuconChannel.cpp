@@ -57,6 +57,66 @@ tFORMAT TrackFormatForMeterRoles(const std::vector<NEuCon::uint32>& roles)
     default: return kFORMAT_Unknown;
     }
 }
+
+void InitializeCellLabel(EuControlKnobCell& cell, const wchar_t* shortName,
+    const wchar_t* name)
+{
+    EuPrimitiveControl* primitive = nullptr;
+    if (cell.GetPrimitive(EuControlKnobCell::kID_KnobLabelDisplay, &primitive) ==
+        kERR_OK && primitive)
+    {
+        primitive->Initialize(kTYP_IndexedString, 1U);
+        primitive->LoadValueAt(0U, tEuString(shortName), tEuString(name), tEuString(name));
+    }
+}
+
+void ChangeCellLabel(EuControlKnobCell& cell, const std::wstring& text)
+{
+    EuPrimitiveControl* primitive = nullptr;
+    if (cell.GetPrimitive(EuControlKnobCell::kID_KnobLabelDisplay, &primitive) ==
+        kERR_OK && primitive)
+    {
+        const auto shortText = text.substr(0U, 4U);
+        const auto mediumText = text.substr(0U, 8U);
+        primitive->Freeze();
+        primitive->LoadValueAt(0U, shortText, mediumText, text);
+        primitive->SetCurrentIndex(0U);
+        primitive->Refresh();
+        primitive->Thaw();
+    }
+}
+
+void InitializeCellSwitch(EuControlKnobCell& cell, const NEuCon::uint32 primitiveId,
+    const NEuCon::uint16 valueCount, const tSWITCH mode)
+{
+    EuPrimitiveControl* primitive = nullptr;
+    if (cell.GetPrimitive(primitiveId, &primitive) == kERR_OK && primitive)
+    {
+        primitive->Initialize(kTYP_Int, valueCount);
+        primitive->LoadValueTableInterpolated(0, static_cast<NEuCon::int32>(valueCount - 1U));
+        if (auto* switchPrimitive = dynamic_cast<EuPrimitiveSwitch*>(primitive))
+        {
+            switchPrimitive->SetSwitchMode(mode);
+        }
+    }
+}
+
+void SetCellSwitchState(EuControlKnobCell& cell, const NEuCon::uint32 switchId,
+    const NEuCon::uint32 ledId, const int value)
+{
+    EuPrimitiveControl* primitive = nullptr;
+    if (cell.GetPrimitive(switchId, &primitive) == kERR_OK && primitive)
+    {
+        primitive->SetCurrentValue(static_cast<NEuCon::int32>(value));
+        primitive->Refresh();
+    }
+    if (cell.GetPrimitive(ledId, &primitive) == kERR_OK && primitive)
+    {
+        primitive->SetCurrentIndex(static_cast<NEuCon::uint16>(
+            value == 0 ? kLEDStatus_Off : kLEDStatus_On));
+        primitive->Refresh();
+    }
+}
 }
 
 EuconChannel::EuconChannel(const int channelOrder, const NEuCon::int32 channelColor,
@@ -66,6 +126,8 @@ EuconChannel::EuconChannel(const int channelOrder, const NEuCon::int32 channelCo
     ChangeHandler muteHandler,
     ChangeHandler soloHandler, ChangeHandler selectHandler,
     ChangeHandler recordArmHandler,
+    RouteHandler outputRouteHandler, RouteHandler inputRouteHandler,
+    AppActionHandler appActionHandler,
     const NEuCon::int32 trackType,
     const std::wstring& channelType)
     : channelOrder_(channelOrder),
@@ -77,8 +139,13 @@ EuconChannel::EuconChannel(const int channelOrder, const NEuCon::int32 channelCo
       soloHandler_(std::move(soloHandler)),
       selectHandler_(std::move(selectHandler)),
       recordArmHandler_(std::move(recordArmHandler)),
+      outputRouteHandler_(std::move(outputRouteHandler)),
+      inputRouteHandler_(std::move(inputRouteHandler)),
+      appActionHandler_(std::move(appActionHandler)),
       fader_(this), name_(this), number_(this), meter_(this), knobSet_(this), knob_(this),
-      panKnobSet_(this), panKnob_(this)
+      panKnobSet_(this), panKnob_(this), outputRouteKnobSet_(this),
+      inputRouteKnobSet_(this), topLevelKnobSet_(this), windowKnobSet_(this),
+      mediaKnobSet_(this)
 {
     SetAttribute(kATRIBID_ProcessorType, kProcType_ChannelStrip);
     SetAttribute(kATRIBID_LayoutRule0, kRUL_EuLayoutChannel);
@@ -88,6 +155,7 @@ EuconChannel::EuconChannel(const int channelOrder, const NEuCon::int32 channelCo
     // Getting Started with EuCon 12.9: surface channel color is standard
     // 0x00RRGGBB track metadata. The surface decides how to render it.
     SetAttribute2(kATRIBID_ChannelColor, channelColor, false);
+    SetAttribute(kATRIBID_ModulesShowTopLevelKnobset, 1);
     SetPersistenceID(persistenceId);
 
     InitializeFader();
@@ -112,10 +180,86 @@ EuconChannel::EuconChannel(const int channelOrder, const NEuCon::int32 channelCo
     {
         InitializeRecordArm();
     }
+    if (outputRouteHandler_ || inputRouteHandler_)
+    {
+        InitializeRouteKnobSets();
+    }
+    if (appActionHandler_)
+    {
+        InitializeApplicationKnobSets();
+    }
+    InitializeTopLevelKnobSet();
 }
 
 EuconChannel::~EuconChannel()
 {
+    topLevelKnobSet_.Freeze();
+    for (const auto index : { 1U, 5U, 7U, 8U, 10U, 12U })
+    {
+        if (topLevelKnobs_[index])
+        {
+            topLevelKnobSet_.RemoveChild(topLevelMemberIds_[index]);
+        }
+    }
+    for (std::size_t index = 0; index < topLevelKnobs_.size(); ++index)
+    {
+        if (topLevelKnobs_[index])
+        {
+            topLevelKnobSet_.Remove(topLevelMemberIds_[index]);
+            topLevelKnobs_[index].reset();
+        }
+    }
+    topLevelKnobSet_.Thaw();
+    RemoveControl(topLevelKnobSet_);
+
+    if (appActionHandler_)
+    {
+        std::vector<std::unique_ptr<EuControlKnobCell>> mediaCells;
+        std::vector<NEuCon::uint32> mediaMemberIds;
+        {
+            const std::scoped_lock lock(mediaMutex_);
+            mediaCells = std::move(mediaCells_);
+            mediaMemberIds = std::move(mediaMemberIds_);
+            mediaKinds_.clear();
+        }
+        mediaKnobSet_.Freeze();
+        for (const auto memberId : mediaMemberIds) mediaKnobSet_.Remove(memberId);
+        mediaKnobSet_.Thaw();
+        mediaCells.clear();
+        RemoveControl(mediaKnobSet_);
+        for (std::size_t index = 0; index < windowCells_.size(); ++index)
+        {
+            windowKnobSet_.Remove(windowMemberIds_[index]);
+            windowCells_[index].reset();
+        }
+        RemoveControl(windowKnobSet_);
+        for (std::size_t index = 0; index < quickActionCells_.size(); ++index)
+        {
+            knobSet_.Remove(quickActionMemberIds_[index]);
+            quickActionCells_[index].reset();
+        }
+    }
+
+    for (std::size_t index = 0; index < outputRouteCells_.size(); ++index)
+    {
+        outputRouteKnobSet_.Remove(outputRouteMemberIds_[index]);
+    }
+    outputRouteCells_.clear();
+    outputRouteMemberIds_.clear();
+    if (outputRouteHandler_)
+    {
+        RemoveControl(outputRouteKnobSet_);
+    }
+    for (std::size_t index = 0; index < inputRouteCells_.size(); ++index)
+    {
+        inputRouteKnobSet_.Remove(inputRouteMemberIds_[index]);
+    }
+    inputRouteCells_.clear();
+    inputRouteMemberIds_.clear();
+    if (inputRouteHandler_)
+    {
+        RemoveControl(inputRouteKnobSet_);
+    }
     if (solo_)
     {
         RemoveControl(*solo_);
@@ -308,7 +452,11 @@ void EuconChannel::InitializeMeter()
 void EuconChannel::InitializeKnob()
 {
     knobSet_.SetId(KnobSetId);
-    knobSet_.SetAttribute(kATRIBID_LayoutName0, EuLayoutChannel::kNAM_Input);
+    // Session volume is an application-specific convenience parameter, not
+    // DAW input gain. The official second-page convention places such
+    // parameters in Quick Controls (top-level knob set 11).
+    knobSet_.SetAttribute(kATRIBID_LayoutName0, EuLayoutChannel::kNAM_TopLevelKnobSet11);
+    knobSet_.SetAttribute(kATRIBID_FuncPersID, "FaderBridge.Chan.QuickControls");
     knobSet_.Freeze();
     AddControl(knobSet_);
 
@@ -335,6 +483,17 @@ void EuconChannel::InitializeKnob()
     }
 
     primitive = nullptr;
+    if (knob_.GetPrimitive(EuControlKnobCell::kID_KnobTopSwitch, &primitive) == kERR_OK)
+    {
+        if (auto* reset = dynamic_cast<EuPrimitiveSwitch*>(primitive))
+        {
+            reset->Initialize(kTYP_Int, 2U);
+            reset->LoadValueTableInterpolated(0, 1);
+            reset->SetSwitchMode(kSWITCH_Raw);
+        }
+    }
+
+    primitive = nullptr;
     if (knob_.GetPrimitive(EuControlKnobCell::kID_KnobLabelDisplay, &primitive) == kERR_OK && primitive)
     {
         primitive->Initialize(kTYP_IndexedString, 1U);
@@ -342,6 +501,63 @@ void EuconChannel::InitializeKnob()
     }
     knobSet_.PushBack(&knob_, knobMemberId_);
     knobSet_.Thaw();
+}
+
+void EuconChannel::InitializeApplicationKnobSets()
+{
+    // Quick Controls is the documented application-specific page. Keep the
+    // continuous session volume in the first cell and add deterministic reset
+    // operations to the remaining cells.
+    const std::array<std::pair<const wchar_t*, const wchar_t*>, 5> quickLabels = {{
+        { L"Pan0", L"Center Pan" },
+        { L"DOut", L"Default Output" },
+        { L"DIn", L"Default Input" },
+        { L"UnMt", L"Unmute" },
+        { L"ClrS", L"Clear Solo" },
+    }};
+    knobSet_.Freeze();
+    for (std::size_t index = 0; index < quickActionCells_.size(); ++index)
+    {
+        auto cell = std::make_unique<EuControlKnobCell>(this);
+        InitializeCellLabel(*cell, quickLabels[index].first, quickLabels[index].second);
+        InitializeCellSwitch(*cell, EuControlKnobCell::kID_LowerSwitch, 2U, kSWITCH_Raw);
+        knobSet_.PushBack(cell.get(), quickActionMemberIds_[index]);
+        quickActionCells_[index] = std::move(cell);
+    }
+    knobSet_.Thaw();
+
+    windowKnobSet_.SetId(WindowKnobSetId);
+    windowKnobSet_.SetAttribute(kATRIBID_LayoutName0,
+        EuLayoutChannel::kNAM_TopLevelKnobSet13);
+    windowKnobSet_.SetAttribute(kATRIBID_FuncPersID,
+        "FaderBridge.Chan.WindowControls");
+    windowKnobSet_.Freeze();
+    AddControl(windowKnobSet_);
+    const std::array<std::pair<const wchar_t*, const wchar_t*>, 4> windowLabels = {{
+        { L"Show", L"Focus Window" },
+        { L"Min", L"Minimize" },
+        { L"Max", L"Maximize" },
+        { L"Top", L"Always On Top" },
+    }};
+    for (std::size_t index = 0; index < windowCells_.size(); ++index)
+    {
+        auto cell = std::make_unique<EuControlKnobCell>(this);
+        InitializeCellLabel(*cell, windowLabels[index].first, windowLabels[index].second);
+        InitializeCellSwitch(*cell, EuControlKnobCell::kID_LowerSwitch, 2U,
+            index >= 2U ? kSWITCH_MomentaryLatch : kSWITCH_Raw);
+        windowKnobSet_.PushBack(cell.get(), windowMemberIds_[index]);
+        windowCells_[index] = std::move(cell);
+    }
+    windowKnobSet_.Thaw();
+
+    mediaKnobSet_.SetId(MediaKnobSetId);
+    mediaKnobSet_.SetAttribute(kATRIBID_LayoutName0,
+        EuLayoutChannel::kNAM_TopLevelKnobSet9);
+    mediaKnobSet_.SetAttribute(kATRIBID_FuncPersID,
+        "FaderBridge.Chan.MediaControls");
+    mediaKnobSet_.Freeze();
+    AddControl(mediaKnobSet_);
+    mediaKnobSet_.Thaw();
 }
 
 void EuconChannel::InitializePan()
@@ -417,6 +633,463 @@ void EuconChannel::InitializePan()
     }
     panKnobSet_.PushBack(&panKnob_, panKnobMemberId_);
     panKnobSet_.Thaw();
+}
+
+void EuconChannel::InitializeRouteKnobSets()
+{
+    if (outputRouteHandler_)
+    {
+        outputRouteKnobSet_.SetId(OutputRouteKnobSetId);
+        outputRouteKnobSet_.SetAttribute(kATRIBID_LayoutName0, EuLayoutChannel::kNAM_Mix);
+        outputRouteKnobSet_.SetAttribute(kATRIBID_FuncPersID, kChanFuncID_Mix);
+        AddControl(outputRouteKnobSet_);
+        RebuildRouteKnobSet(outputRouteKnobSet_, outputRouteCells_,
+            outputRouteMemberIds_, {}, {}, true);
+    }
+    if (inputRouteHandler_)
+    {
+        inputRouteKnobSet_.SetId(InputRouteKnobSetId);
+        inputRouteKnobSet_.SetAttribute(kATRIBID_LayoutName0, EuLayoutChannel::kNAM_Input);
+        inputRouteKnobSet_.SetAttribute(kATRIBID_FuncPersID, kChanFuncID_Input);
+        AddControl(inputRouteKnobSet_);
+        RebuildRouteKnobSet(inputRouteKnobSet_, inputRouteCells_,
+            inputRouteMemberIds_, {}, {}, false);
+    }
+}
+
+void EuconChannel::InitializeTopLevelKnobSet()
+{
+    // Getting Started with EUCON section 8.2.7 and the current EuConApp
+    // implementation: expose a real hierarchy instead of relying on a
+    // surface-generated top page. This lets EuControl/WSControl map the same
+    // application model to any compatible surface.
+    topLevelKnobSet_.SetId(TopLevelKnobSetId);
+    topLevelKnobSet_.SetAttribute(kATRIBID_LayoutName0,
+        EuLayoutChannel::kNAM_TopLevelKnobset);
+    topLevelKnobSet_.Freeze();
+    AddControl(topLevelKnobSet_);
+
+    struct TopLevelSpec
+    {
+        const wchar_t* shortName;
+        const wchar_t* name;
+        const char* functionId;
+        bool enabled;
+    };
+    const std::array<TopLevelSpec, 16> specs = {{
+        { L"", L"", kChanFuncID_Inserts, false },
+        { L"In", L"Input", kChanFuncID_Input, static_cast<bool>(inputRouteHandler_) },
+        { L"", L"", kChanFuncID_Dynamics, false },
+        { L"", L"", kChanFuncID_EQ, false },
+        { L"", L"", kChanFuncID_AuxSend, false },
+        { L"Pan", L"Pan", kChanFuncID_Pan, static_cast<bool>(panHandler_) },
+        { L"", L"", kChanFuncID_Group, false },
+        { L"Out", L"Output", kChanFuncID_Mix, static_cast<bool>(outputRouteHandler_) },
+        { L"Media", L"Media", "FaderBridge.Chan.MediaControls",
+            static_cast<bool>(appActionHandler_) },
+        { L"", L"", "FaderBridge.Chan.Instruments", false },
+        { L"QCtrl", L"Quick", "FaderBridge.Chan.QuickControls", true },
+        { L"", L"", "FaderBridge.Chan.Filters", false },
+        { L"Win", L"Window", "FaderBridge.Chan.WindowControls",
+            static_cast<bool>(appActionHandler_) },
+        { L"", L"", "FaderBridge.Chan.PanRelated", false },
+        { L"", L"", "FaderBridge.Chan.GroupRelated", false },
+        { L"", L"", "FaderBridge.Chan.OutputRelated", false },
+    }};
+
+    for (std::size_t index = 0; index < specs.size(); ++index)
+    {
+        const auto& spec = specs[index];
+        auto cell = std::make_unique<EuControlKnobCell>(this);
+        cell->SetAttribute2(kATRIBID_FuncPersID, spec.functionId, false);
+        cell->SetAttribute2(kATRIBID_NumberOfChildren, spec.enabled ? 1 : 0, false);
+        EuPrimitiveControl* primitive = nullptr;
+        if (cell->GetPrimitive(EuControlKnobCell::kID_KnobLabelDisplay, &primitive) ==
+            kERR_OK && primitive)
+        {
+            primitive->Initialize(kTYP_IndexedString, 1U);
+            primitive->LoadValueAt(0U, tEuString(spec.shortName), tEuString(spec.name),
+                tEuString(spec.name));
+        }
+        topLevelKnobSet_.PushBack(cell.get(), topLevelMemberIds_[index]);
+        topLevelKnobs_[index] = std::move(cell);
+    }
+
+    const auto addChild = [this](const std::size_t index, EuControlKnobCellArray& child)
+    {
+        topLevelKnobs_[index]->Freeze();
+        topLevelKnobSet_.AddChild(topLevelMemberIds_[index], child);
+    };
+    if (inputRouteHandler_) addChild(1U, inputRouteKnobSet_);
+    if (panHandler_) addChild(5U, panKnobSet_);
+    if (outputRouteHandler_) addChild(7U, outputRouteKnobSet_);
+    if (appActionHandler_) addChild(8U, mediaKnobSet_);
+    addChild(10U, knobSet_);
+    if (appActionHandler_) addChild(12U, windowKnobSet_);
+    topLevelKnobSet_.Thaw();
+}
+
+void EuconChannel::RebuildRouteKnobSet(EuControlKnobCellArray& knobSet,
+    std::vector<std::unique_ptr<EuControlKnobCell>>& cells,
+    std::vector<NEuCon::uint32>& memberIds,
+    const std::vector<RouteOption>& options, const std::wstring& selectedId,
+    const bool output)
+{
+    std::vector<std::unique_ptr<EuControlKnobCell>> oldCells;
+    std::vector<NEuCon::uint32> oldMemberIds;
+    {
+        const std::scoped_lock lock(routeMutex_);
+        oldCells = std::move(cells);
+        oldMemberIds = std::move(memberIds);
+        (output ? outputRouteOptions_ : inputRouteOptions_).clear();
+    }
+
+    knobSet.Freeze();
+    for (const auto memberId : oldMemberIds)
+    {
+        knobSet.Remove(memberId);
+    }
+    oldCells.clear();
+
+    std::vector<RouteOption> allOptions;
+    allOptions.reserve(options.size() + 1U);
+    allOptions.push_back({ L"", L"Default", 0x00FFFFFF });
+    allOptions.insert(allOptions.end(), options.begin(), options.end());
+
+    std::vector<std::unique_ptr<EuControlKnobCell>> newCells;
+    std::vector<NEuCon::uint32> newMemberIds;
+    newCells.reserve(allOptions.size());
+    newMemberIds.reserve(allOptions.size());
+    for (const auto& option : allOptions)
+    {
+        auto cell = std::make_unique<EuControlKnobCell>(this);
+        EuPrimitiveControl* primitive = nullptr;
+        if (cell->GetPrimitive(EuControlKnobCell::kID_Knob, &primitive) == kERR_OK && primitive)
+        {
+            primitive->Initialize(kTYP_Int, 1U);
+            primitive->LoadValueAt(0U, 0);
+            if (auto* rotary = dynamic_cast<EuPrimitiveKnob*>(primitive))
+            {
+                rotary->SetPositionRingMode(kRingOff);
+            }
+        }
+        if (cell->GetPrimitive(EuControlKnobCell::kID_KnobLabelDisplay, &primitive) ==
+            kERR_OK && primitive)
+        {
+            primitive->Initialize(kTYP_IndexedString, 1U);
+            const auto shortName = option.name.substr(0U, 4U);
+            const auto mediumName = option.name.substr(0U, 8U);
+            primitive->LoadValueAt(0U, shortName, mediumName, option.name);
+        }
+        if (cell->GetPrimitive(EuControlKnobCell::kID_LowerSwitch, &primitive) ==
+            kERR_OK && primitive)
+        {
+            primitive->Initialize(kTYP_Int, 2U);
+            primitive->LoadValueTableInterpolated(0, 1);
+            if (auto* routeSwitch = dynamic_cast<EuPrimitiveSwitch*>(primitive))
+            {
+                routeSwitch->SetSwitchMode(kSWITCH_MomentaryLatch);
+            }
+        }
+        if (cell->GetPrimitive(EuControlKnobCell::kID_FunctionLed, &primitive) ==
+            kERR_OK && primitive)
+        {
+            primitive->SetAttribute(kATRIBID_ARGBColor, option.color,
+                kAttrNotify_PrimitiveControl);
+        }
+        NEuCon::uint32 memberId = 0U;
+        knobSet.PushBack(cell.get(), memberId);
+        newMemberIds.push_back(memberId);
+        newCells.push_back(std::move(cell));
+    }
+    knobSet.Thaw();
+
+    {
+        const std::scoped_lock lock(routeMutex_);
+        cells = std::move(newCells);
+        memberIds = std::move(newMemberIds);
+        (output ? outputRouteOptions_ : inputRouteOptions_) = std::move(allOptions);
+        (output ? selectedOutputRouteId_ : selectedInputRouteId_) = selectedId;
+    }
+    UpdateRouteSelection(output, selectedId);
+}
+
+void EuconChannel::UpdateRouteSelection(const bool output, const std::wstring& selectedId)
+{
+    std::vector<std::pair<EuControlKnobCell*, bool>> updates;
+    {
+        const std::scoped_lock lock(routeMutex_);
+        auto& options = output ? outputRouteOptions_ : inputRouteOptions_;
+        auto& cells = output ? outputRouteCells_ : inputRouteCells_;
+        (output ? selectedOutputRouteId_ : selectedInputRouteId_) = selectedId;
+        const auto count = std::min(options.size(), cells.size());
+        updates.reserve(count);
+        for (std::size_t index = 0; index < count; ++index)
+        {
+            updates.emplace_back(cells[index].get(), options[index].id == selectedId);
+        }
+    }
+    for (const auto& [cell, selected] : updates)
+    {
+        EuPrimitiveControl* primitive = nullptr;
+        if (cell->GetPrimitive(EuControlKnobCell::kID_LowerSwitch, &primitive) ==
+            kERR_OK && primitive)
+        {
+            primitive->SetCurrentValue(selected ? 1 : 0);
+        }
+        if (cell->GetPrimitive(EuControlKnobCell::kID_LowerSwitchLed, &primitive) ==
+            kERR_OK && primitive)
+        {
+            primitive->SetCurrentIndex(static_cast<NEuCon::uint16>(
+                selected ? kLEDStatus_On : kLEDStatus_Off));
+            primitive->Refresh();
+        }
+    }
+}
+
+void EuconChannel::SetRouteOptions(const std::vector<RouteOption>& outputOptions,
+    const std::wstring& selectedOutputId,
+    const std::vector<RouteOption>& inputOptions,
+    const std::wstring& selectedInputId)
+{
+    const auto sameOptions = [](const std::vector<RouteOption>& current,
+        const std::vector<RouteOption>& desired)
+    {
+        if (current.size() != desired.size() + 1U) return false;
+        for (std::size_t index = 0; index < desired.size(); ++index)
+        {
+            const auto& left = current[index + 1U];
+            const auto& right = desired[index];
+            if (left.id != right.id || left.name != right.name || left.color != right.color)
+            {
+                return false;
+            }
+        }
+        return true;
+    };
+
+    bool rebuildOutput = false;
+    bool rebuildInput = false;
+    bool updateOutput = false;
+    bool updateInput = false;
+    {
+        const std::scoped_lock lock(routeMutex_);
+        rebuildOutput = outputRouteHandler_ && !sameOptions(outputRouteOptions_, outputOptions);
+        rebuildInput = inputRouteHandler_ && !sameOptions(inputRouteOptions_, inputOptions);
+        updateOutput = outputRouteHandler_ && selectedOutputRouteId_ != selectedOutputId;
+        updateInput = inputRouteHandler_ && selectedInputRouteId_ != selectedInputId;
+    }
+    if (rebuildOutput)
+    {
+        RebuildRouteKnobSet(outputRouteKnobSet_, outputRouteCells_, outputRouteMemberIds_,
+            outputOptions, selectedOutputId, true);
+    }
+    else if (updateOutput)
+    {
+        UpdateRouteSelection(true, selectedOutputId);
+    }
+    if (rebuildInput)
+    {
+        RebuildRouteKnobSet(inputRouteKnobSet_, inputRouteCells_, inputRouteMemberIds_,
+            inputOptions, selectedInputId, false);
+    }
+    else if (updateInput)
+    {
+        UpdateRouteSelection(false, selectedInputId);
+    }
+}
+
+void EuconChannel::SetWindowState(const bool available, const bool foreground,
+    const bool minimized, const bool maximized, const bool topmost)
+{
+    if (!appActionHandler_)
+    {
+        return;
+    }
+    SetCellSwitchState(*windowCells_[0], EuControlKnobCell::kID_LowerSwitch,
+        EuControlKnobCell::kID_LowerSwitchLed, available && foreground ? 1 : 0);
+    SetCellSwitchState(*windowCells_[1], EuControlKnobCell::kID_LowerSwitch,
+        EuControlKnobCell::kID_LowerSwitchLed, available && minimized ? 1 : 0);
+    SetCellSwitchState(*windowCells_[2], EuControlKnobCell::kID_LowerSwitch,
+        EuControlKnobCell::kID_LowerSwitchLed, available && maximized ? 1 : 0);
+    SetCellSwitchState(*windowCells_[3], EuControlKnobCell::kID_LowerSwitch,
+        EuControlKnobCell::kID_LowerSwitchLed, available && topmost ? 1 : 0);
+}
+
+void EuconChannel::RebuildMediaKnobSet(
+    const std::vector<MediaCellKind>& desiredKinds, const std::wstring& title,
+    const std::wstring& artist)
+{
+    std::vector<std::unique_ptr<EuControlKnobCell>> oldCells;
+    std::vector<NEuCon::uint32> oldMemberIds;
+    {
+        const std::scoped_lock lock(mediaMutex_);
+        oldCells = std::move(mediaCells_);
+        oldMemberIds = std::move(mediaMemberIds_);
+        mediaKinds_.clear();
+    }
+
+    mediaKnobSet_.Freeze();
+    for (const auto memberId : oldMemberIds) mediaKnobSet_.Remove(memberId);
+    oldCells.clear();
+
+    std::vector<std::unique_ptr<EuControlKnobCell>> newCells;
+    std::vector<NEuCon::uint32> newMemberIds;
+    newCells.reserve(desiredKinds.size());
+    newMemberIds.reserve(desiredKinds.size());
+    for (const auto kind : desiredKinds)
+    {
+        auto cell = std::make_unique<EuControlKnobCell>(this);
+        const wchar_t* shortLabel = L"";
+        const wchar_t* longLabel = L"";
+        switch (kind)
+        {
+        case MediaCellKind::Title:
+            InitializeCellLabel(*cell, title.substr(0U, 4U).c_str(), title.c_str());
+            break;
+        case MediaCellKind::Artist:
+            InitializeCellLabel(*cell, artist.substr(0U, 4U).c_str(), artist.c_str());
+            break;
+        case MediaCellKind::PlayPause: shortLabel = L"Play"; longLabel = L"Play Pause"; break;
+        case MediaCellKind::Previous: shortLabel = L"Prev"; longLabel = L"Previous"; break;
+        case MediaCellKind::Next: shortLabel = L"Next"; longLabel = L"Next"; break;
+        case MediaCellKind::Stop: shortLabel = L"Stop"; longLabel = L"Stop"; break;
+        case MediaCellKind::Position: shortLabel = L"Pos"; longLabel = L"Position"; break;
+        case MediaCellKind::Seek: shortLabel = L"Time"; longLabel = L"Position"; break;
+        case MediaCellKind::Shuffle: shortLabel = L"Shuf"; longLabel = L"Shuffle"; break;
+        case MediaCellKind::Repeat: shortLabel = L"Rpt"; longLabel = L"Repeat"; break;
+        }
+        if (kind != MediaCellKind::Title && kind != MediaCellKind::Artist)
+        {
+            InitializeCellLabel(*cell, shortLabel, longLabel);
+        }
+        if (kind == MediaCellKind::Seek)
+        {
+            EuPrimitiveControl* primitive = nullptr;
+            if (cell->GetPrimitive(EuControlKnobCell::kID_Knob, &primitive) == kERR_OK &&
+                primitive)
+            {
+                primitive->Initialize(kTYP_Float, 1001U);
+                primitive->LoadValueTableInterpolated(0.0F, 100.0F);
+                if (auto* rotary = dynamic_cast<EuPrimitiveKnob*>(primitive))
+                {
+                    rotary->SetPositionRingMode(kRingPoint);
+                }
+            }
+        }
+        else if (kind != MediaCellKind::Title && kind != MediaCellKind::Artist &&
+            kind != MediaCellKind::Position)
+        {
+            const auto repeat = kind == MediaCellKind::Repeat;
+            const auto latched = kind == MediaCellKind::PlayPause ||
+                kind == MediaCellKind::Shuffle || repeat;
+            InitializeCellSwitch(*cell, EuControlKnobCell::kID_LowerSwitch,
+                repeat ? 3U : 2U, latched ? kSWITCH_MomentaryLatch : kSWITCH_Raw);
+        }
+        NEuCon::uint32 memberId = 0U;
+        mediaKnobSet_.PushBack(cell.get(), memberId);
+        newMemberIds.push_back(memberId);
+        newCells.push_back(std::move(cell));
+    }
+    mediaKnobSet_.Thaw();
+    {
+        const std::scoped_lock lock(mediaMutex_);
+        mediaCells_ = std::move(newCells);
+        mediaMemberIds_ = std::move(newMemberIds);
+        mediaKinds_ = desiredKinds;
+    }
+    FB_TRACE("MEDIA_MODEL track=%d cells=%u", channelOrder_.load(),
+        static_cast<unsigned>(desiredKinds.size()));
+}
+
+void EuconChannel::UpdateMediaLabel(const MediaCellKind kind,
+    const std::wstring& text)
+{
+    EuControlKnobCell* cell = nullptr;
+    {
+        const std::scoped_lock lock(mediaMutex_);
+        const auto found = std::find(mediaKinds_.begin(), mediaKinds_.end(), kind);
+        if (found != mediaKinds_.end())
+        {
+            cell = mediaCells_[static_cast<std::size_t>(
+                std::distance(mediaKinds_.begin(), found))].get();
+        }
+    }
+    if (cell) ChangeCellLabel(*cell, text);
+}
+
+void EuconChannel::SetMediaState(const bool available, const bool playing,
+    const bool canPlayPause, const bool canPrevious, const bool canNext,
+    const bool canStop, const bool hasPosition, const bool canSeek, const bool canShuffle,
+    const bool shuffle, const bool canRepeat, const int repeatMode,
+    const float position, const std::wstring& title, const std::wstring& artist)
+{
+    if (!appActionHandler_) return;
+
+    std::vector<MediaCellKind> desiredKinds;
+    if (available)
+    {
+        if (!title.empty()) desiredKinds.push_back(MediaCellKind::Title);
+        if (!artist.empty()) desiredKinds.push_back(MediaCellKind::Artist);
+        if (canPlayPause) desiredKinds.push_back(MediaCellKind::PlayPause);
+        if (canPrevious) desiredKinds.push_back(MediaCellKind::Previous);
+        if (canNext) desiredKinds.push_back(MediaCellKind::Next);
+        if (canStop) desiredKinds.push_back(MediaCellKind::Stop);
+        if (hasPosition)
+        {
+            desiredKinds.push_back(canSeek ? MediaCellKind::Seek : MediaCellKind::Position);
+        }
+        if (canShuffle) desiredKinds.push_back(MediaCellKind::Shuffle);
+        if (canRepeat) desiredKinds.push_back(MediaCellKind::Repeat);
+    }
+    bool rebuild = false;
+    {
+        const std::scoped_lock lock(mediaMutex_);
+        rebuild = mediaKinds_ != desiredKinds;
+    }
+    if (rebuild) RebuildMediaKnobSet(desiredKinds, title, artist);
+    UpdateMediaLabel(MediaCellKind::Title, title);
+    UpdateMediaLabel(MediaCellKind::Artist, artist);
+    UpdateMediaLabel(MediaCellKind::Position,
+        L"Pos " + std::to_wstring(static_cast<int>(std::lround(
+            std::clamp(position, 0.0F, 1.0F) * 100.0F))) + L"%");
+
+    std::vector<std::pair<MediaCellKind, EuControlKnobCell*>> cells;
+    {
+        const std::scoped_lock lock(mediaMutex_);
+        for (std::size_t index = 0; index < mediaKinds_.size(); ++index)
+        {
+            cells.emplace_back(mediaKinds_[index], mediaCells_[index].get());
+        }
+    }
+    for (const auto& [kind, cell] : cells)
+    {
+        if (kind == MediaCellKind::PlayPause)
+        {
+            SetCellSwitchState(*cell, EuControlKnobCell::kID_LowerSwitch,
+                EuControlKnobCell::kID_LowerSwitchLed, playing ? 1 : 0);
+        }
+        else if (kind == MediaCellKind::Shuffle)
+        {
+            SetCellSwitchState(*cell, EuControlKnobCell::kID_LowerSwitch,
+                EuControlKnobCell::kID_LowerSwitchLed, shuffle ? 1 : 0);
+        }
+        else if (kind == MediaCellKind::Repeat)
+        {
+            SetCellSwitchState(*cell, EuControlKnobCell::kID_LowerSwitch,
+                EuControlKnobCell::kID_LowerSwitchLed, std::clamp(repeatMode, 0, 2));
+        }
+        else if (kind == MediaCellKind::Seek)
+        {
+            EuPrimitiveControl* primitive = nullptr;
+            if (cell->GetPrimitive(EuControlKnobCell::kID_Knob, &primitive) ==
+                kERR_OK && primitive)
+            {
+                primitive->SetCurrentValue(std::clamp(position, 0.0F, 1.0F) * 100.0F);
+                primitive->Refresh();
+            }
+        }
+    }
 }
 
 void EuconChannel::SetFaderNormalized(const float value)
@@ -818,6 +1491,40 @@ void EuconChannel::OnPrimitiveCallback(const tEVT eventType, NEuCon::uint32,
         FB_TRACE("KNOB_TOUCH track=%d state=%d index=%u", channelOrder_.load(),
             value != 0 ? 1 : 0, static_cast<unsigned>(newValueIndex));
     }
+    else if (controlId == KnobSetId && arrayMemberControlId == knobMemberId_ &&
+        primitiveId == EuControlKnobCell::kID_KnobTopSwitch && appActionHandler_)
+    {
+        NEuCon::int32 value = 0;
+        affectedPrimitive->GetValueAt(newValueIndex, value);
+        if (value != 0)
+        {
+            appActionHandler_(AppAction::ResetVolume, 1.0F, newValueIndex,
+                static_cast<float>(value));
+        }
+    }
+    else if (controlId == KnobSetId && primitiveId == EuControlKnobCell::kID_LowerSwitch &&
+        appActionHandler_)
+    {
+        const auto found = std::find(quickActionMemberIds_.begin(),
+            quickActionMemberIds_.end(), arrayMemberControlId);
+        if (found != quickActionMemberIds_.end())
+        {
+            NEuCon::int32 value = 0;
+            affectedPrimitive->GetValueAt(newValueIndex, value);
+            if (value != 0)
+            {
+                static constexpr std::array<AppAction, 5> actions = {{
+                    AppAction::ResetPan, AppAction::DefaultOutput,
+                    AppAction::DefaultInput, AppAction::Unmute,
+                    AppAction::ClearSolo,
+                }};
+                const auto index = static_cast<std::size_t>(
+                    std::distance(quickActionMemberIds_.begin(), found));
+                appActionHandler_(actions[index], 1.0F, newValueIndex,
+                    static_cast<float>(value));
+            }
+        }
+    }
     else if (controlId == PanKnobSetId && arrayMemberControlId == panKnobMemberId_ &&
         primitiveId == EuControlKnobCell::kID_Knob && panHandler_)
     {
@@ -845,6 +1552,118 @@ void EuconChannel::OnPrimitiveCallback(const tEVT eventType, NEuCon::uint32,
         if (value != 0)
         {
             panResetHandler_(0.0F, newValueIndex, 0.0F);
+        }
+    }
+    else if (controlId == WindowKnobSetId &&
+        primitiveId == EuControlKnobCell::kID_LowerSwitch && appActionHandler_)
+    {
+        const auto found = std::find(windowMemberIds_.begin(), windowMemberIds_.end(),
+            arrayMemberControlId);
+        if (found != windowMemberIds_.end())
+        {
+            NEuCon::int32 value = 0;
+            affectedPrimitive->GetValueAt(newValueIndex, value);
+            const auto index = static_cast<std::size_t>(
+                std::distance(windowMemberIds_.begin(), found));
+            static constexpr std::array<AppAction, 4> actions = {{
+                AppAction::WindowFocus, AppAction::WindowMinimize,
+                AppAction::WindowMaximize, AppAction::WindowTopmost,
+            }};
+            if (index >= 2U || value != 0)
+            {
+                appActionHandler_(actions[index], static_cast<float>(value),
+                    newValueIndex, static_cast<float>(value));
+            }
+        }
+    }
+    else if (controlId == MediaKnobSetId && appActionHandler_)
+    {
+        MediaCellKind kind{};
+        bool foundMember = false;
+        {
+            const std::scoped_lock lock(mediaMutex_);
+            const auto found = std::find(mediaMemberIds_.begin(), mediaMemberIds_.end(),
+                arrayMemberControlId);
+            if (found != mediaMemberIds_.end())
+            {
+                kind = mediaKinds_[static_cast<std::size_t>(
+                    std::distance(mediaMemberIds_.begin(), found))];
+                foundMember = true;
+            }
+        }
+        if (!foundMember || kind == MediaCellKind::Title || kind == MediaCellKind::Artist ||
+            kind == MediaCellKind::Position)
+        {
+            return;
+        }
+        AppAction action{};
+        switch (kind)
+        {
+        case MediaCellKind::PlayPause: action = AppAction::MediaPlayPause; break;
+        case MediaCellKind::Previous: action = AppAction::MediaPrevious; break;
+        case MediaCellKind::Next: action = AppAction::MediaNext; break;
+        case MediaCellKind::Stop: action = AppAction::MediaStop; break;
+        case MediaCellKind::Position: return;
+        case MediaCellKind::Seek: action = AppAction::MediaSeek; break;
+        case MediaCellKind::Shuffle: action = AppAction::MediaShuffle; break;
+        case MediaCellKind::Repeat: action = AppAction::MediaRepeat; break;
+        default: return;
+        }
+        if (kind == MediaCellKind::Seek && primitiveId == EuControlKnobCell::kID_Knob)
+        {
+            NEuCon::float32 value = 0.0F;
+            affectedPrimitive->GetValueAt(newValueIndex, value);
+            appActionHandler_(action, std::clamp(value / 100.0F, 0.0F, 1.0F),
+                newValueIndex, value);
+        }
+        else if (kind != MediaCellKind::Seek &&
+            primitiveId == EuControlKnobCell::kID_LowerSwitch)
+        {
+            NEuCon::int32 value = 0;
+            affectedPrimitive->GetValueAt(newValueIndex, value);
+            const auto momentary = kind == MediaCellKind::Previous ||
+                kind == MediaCellKind::Next || kind == MediaCellKind::Stop;
+            if (!momentary || value != 0)
+            {
+                appActionHandler_(action, static_cast<float>(value), newValueIndex,
+                    static_cast<float>(value));
+            }
+        }
+    }
+    else if ((controlId == OutputRouteKnobSetId || controlId == InputRouteKnobSetId) &&
+        primitiveId == EuControlKnobCell::kID_LowerSwitch)
+    {
+        NEuCon::int32 value = 0;
+        affectedPrimitive->GetValueAt(newValueIndex, value);
+        if (value == 0)
+        {
+            return;
+        }
+        const auto output = controlId == OutputRouteKnobSetId;
+        std::wstring endpointId;
+        {
+            const std::scoped_lock lock(routeMutex_);
+            const auto& memberIds = output ? outputRouteMemberIds_ : inputRouteMemberIds_;
+            const auto& options = output ? outputRouteOptions_ : inputRouteOptions_;
+            const auto found = std::find(memberIds.begin(), memberIds.end(),
+                arrayMemberControlId);
+            if (found == memberIds.end())
+            {
+                return;
+            }
+            const auto index = static_cast<std::size_t>(std::distance(memberIds.begin(), found));
+            if (index >= options.size())
+            {
+                return;
+            }
+            endpointId = options[index].id;
+        }
+        FB_TRACE("ROUTE_EVT track=%d flow=%s endpoint=%ls", channelOrder_.load(),
+            output ? "render" : "capture", endpointId.empty() ? L"default" : endpointId.c_str());
+        auto& handler = output ? outputRouteHandler_ : inputRouteHandler_;
+        if (handler)
+        {
+            handler(endpointId);
         }
     }
 }

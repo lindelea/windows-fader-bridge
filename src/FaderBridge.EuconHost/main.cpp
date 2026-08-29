@@ -3,6 +3,8 @@
 #include "EuconHost.h"
 #include "DiagnosticLog.h"
 
+#include <winrt/base.h>
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -243,6 +245,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
 {
+    winrt::init_apartment(winrt::apartment_type::multi_threaded);
     DiagnosticLog::Instance().Start();
     WNDCLASSW windowClass{};
     windowClass.lpfnWndProc = WindowProcedure;
@@ -273,5 +276,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
         DispatchMessageW(&message);
     }
     DiagnosticLog::Instance().Stop();
+    winrt::uninit_apartment();
     return static_cast<int>(message.wParam);
 }

@@ -11,6 +11,7 @@
 #include "EuDefinitions.h"
 #include "EuconChannel.h"
 #include "WindowsCommandProcessor.h"
+#include "WindowsMediaController.h"
 #include "WindowsSystemProcessor.h"
 
 #include <algorithm>
@@ -173,6 +174,15 @@ struct WindowSearch
     int bestScore = 0;
 };
 
+struct ApplicationWindowState
+{
+    bool available = false;
+    bool foreground = false;
+    bool minimized = false;
+    bool maximized = false;
+    bool topmost = false;
+};
+
 BOOL CALLBACK FindApplicationWindow(const HWND window, const LPARAM parameter)
 {
     auto& search = *reinterpret_cast<WindowSearch*>(parameter);
@@ -232,6 +242,53 @@ WindowSearch FindBestApplicationWindow(const std::vector<DWORD>& processIds,
     WindowSearch search{ &processIds, &executablePath, &packageFamilyName };
     EnumWindows(FindApplicationWindow, reinterpret_cast<LPARAM>(&search));
     return search;
+}
+
+ApplicationWindowState GetApplicationWindowState(const std::vector<DWORD>& processIds,
+    const std::wstring& executablePath, const std::wstring& packageFamilyName)
+{
+    ApplicationWindowState state;
+    const auto search = FindBestApplicationWindow(processIds, executablePath,
+        packageFamilyName);
+    if (!search.bestWindow)
+    {
+        return state;
+    }
+    state.available = true;
+    state.foreground = GetForegroundWindow() == search.bestWindow;
+    state.minimized = IsIconic(search.bestWindow) != FALSE;
+    state.maximized = IsZoomed(search.bestWindow) != FALSE;
+    state.topmost = (GetWindowLongPtrW(search.bestWindow, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
+    return state;
+}
+
+bool SetApplicationWindowMaximized(const std::vector<DWORD>& processIds,
+    const std::wstring& executablePath, const std::wstring& packageFamilyName,
+    const bool maximized)
+{
+    const auto search = FindBestApplicationWindow(processIds, executablePath,
+        packageFamilyName);
+    if (!search.bestWindow) return false;
+    const auto accepted = ShowWindowAsync(search.bestWindow,
+        maximized ? SW_MAXIMIZE : SW_RESTORE) != FALSE;
+    FB_TRACE("WINDOW_MAXIMIZE hwnd=%p state=%d accepted=%d", search.bestWindow,
+        maximized ? 1 : 0, accepted ? 1 : 0);
+    return accepted;
+}
+
+bool SetApplicationWindowTopmost(const std::vector<DWORD>& processIds,
+    const std::wstring& executablePath, const std::wstring& packageFamilyName,
+    const bool topmost)
+{
+    const auto search = FindBestApplicationWindow(processIds, executablePath,
+        packageFamilyName);
+    if (!search.bestWindow) return false;
+    const auto accepted = SetWindowPos(search.bestWindow,
+        topmost ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE) != FALSE;
+    FB_TRACE("WINDOW_TOPMOST hwnd=%p state=%d accepted=%d", search.bestWindow,
+        topmost ? 1 : 0, accepted ? 1 : 0);
+    return accepted;
 }
 
 bool BringApplicationWindowToFront(const std::vector<DWORD>& processIds,
@@ -442,11 +499,25 @@ std::unique_ptr<EuconHost::TrackState> EuconHost::CreateTrack(const int channelO
         bool commandQueued = false;
         if (audioController_ && audioSlot >= 0)
         {
-            commandQueued = kind == 2 ? audioController_->QueueMute(audioSlot, value != 0.0F)
-                : kind == 3 ? audioController_->QueueSetDefault(audioSlot)
-                : kind == 4 ? false
-                : kind == 7 || kind == 8 ? audioController_->QueuePan(audioSlot, value)
-                : audioController_->QueueVolume(audioSlot, value);
+            switch (kind)
+            {
+            case 0:
+            case 1:
+                commandQueued = audioController_->QueueVolume(audioSlot, value);
+                break;
+            case 2:
+                commandQueued = audioController_->QueueMute(audioSlot, value != 0.0F);
+                break;
+            case 3:
+                commandQueued = audioController_->QueueSetDefault(audioSlot);
+                break;
+            case 7:
+            case 8:
+                commandQueued = audioController_->QueuePan(audioSlot, value);
+                break;
+            default:
+                break;
+            }
         }
         FB_TRACE("SURFACE_QUEUE track=%d slot=%d kind=%d value=%.4f queued=%d",
             channelOrder, audioSlot, kind, value, commandQueued ? 1 : 0);
@@ -474,12 +545,34 @@ std::unique_ptr<EuconHost::TrackState> EuconHost::CreateTrack(const int channelO
     EuconChannel::ChangeHandler selectHandler;
     EuconChannel::ChangeHandler panHandler;
     EuconChannel::ChangeHandler panResetHandler;
+    EuconChannel::RouteHandler outputRouteHandler;
+    EuconChannel::RouteHandler inputRouteHandler;
+    EuconChannel::AppActionHandler appActionHandler;
     if (strip.role == AudioStripRole::Application)
     {
         soloHandler = [report](const float value, const NEuCon::uint16 rawIndex,
             const float rawValue) { report(value, 4, rawIndex, rawValue); };
         selectHandler = [report](const float value, const NEuCon::uint16 rawIndex,
             const float rawValue) { report(value, 5, rawIndex, rawValue); };
+        outputRouteHandler = [this, key](const std::wstring& endpointId)
+        {
+            if (audioController_)
+            {
+                audioController_->QueueApplicationRoute(key, false, endpointId);
+            }
+        };
+        inputRouteHandler = [this, key](const std::wstring& endpointId)
+        {
+            if (audioController_)
+            {
+                audioController_->QueueApplicationRoute(key, true, endpointId);
+            }
+        };
+        appActionHandler = [report](const EuconChannel::AppAction action,
+            const float value, const NEuCon::uint16 rawIndex, const float rawValue)
+        {
+            report(value, 100 + static_cast<int>(action), rawIndex, rawValue);
+        };
     }
     if (strip.panAvailable)
     {
@@ -504,6 +597,8 @@ std::unique_ptr<EuconHost::TrackState> EuconHost::CreateTrack(const int channelO
         [report](const float value, const NEuCon::uint16 rawIndex,
             const float rawValue) { report(value, 2, rawIndex, rawValue); },
         std::move(soloHandler), std::move(selectHandler), std::move(recordArmHandler),
+        std::move(outputRouteHandler), std::move(inputRouteHandler),
+        std::move(appActionHandler),
         EuconTrackType(strip.role),
         strip.sortGroup == 0 ? L"Output" : strip.sortGroup == 1 ? L"Input" : L"Audio");
     track->channel->SetMuted(false);
@@ -697,9 +792,13 @@ EuconHost::EuconHost(const HWND notificationWindow) : notificationWindow_(notifi
     audioController_ = std::make_unique<NativeAudioController>(
         notificationWindow_, kAudioFrameMessage);
     audioController_->Start();
+    mediaController_ = std::make_unique<WindowsMediaController>();
+    mediaController_->Initialize();
 
     node_ = std::make_unique<FaderBridgeNode>(notificationWindow_);
     node_->SetAttribute2(kATRIBID_ProcessorMeterAPIVersion, kMeterAPIVersion_3_1, false);
+    node_->SetAttribute2(kATRIBID_SupportedProcessorFeatures,
+        kSupportsNumberOfChildrenAttribute, false);
     node_->Freeze();
     node_->SetPersistenceID(L"FaderBridge.WindowsAudio.2026");
     node_->SetAttribute(kATRIBID_SimpleFriendlyName, L"FaderBridge Windows Audio");
@@ -765,6 +864,7 @@ EuconHost::~EuconHost()
         node_.reset();
     }
     audioController_.reset();
+    mediaController_.reset();
     EuConManager::Destroy();
 }
 
@@ -782,6 +882,20 @@ int EuconHost::ApplyAudioFrame(const AudioFrame& frame)
     const auto now = std::chrono::steady_clock::now();
     const auto fullRefresh = node_->ConsumeRefreshRequest();
     EuBatchedMeterWriter meterWriter(*node_);
+    std::vector<EuconChannel::RouteOption> outputRoutes;
+    std::vector<EuconChannel::RouteOption> inputRoutes;
+    outputRoutes.reserve(frame.outputRoutes.size());
+    inputRoutes.reserve(frame.inputRoutes.size());
+    for (const auto& route : frame.outputRoutes)
+    {
+        outputRoutes.push_back({ route.id, route.name,
+            static_cast<NEuCon::int32>(route.color & 0x00FFFFFFU) });
+    }
+    for (const auto& route : frame.inputRoutes)
+    {
+        inputRoutes.push_back({ route.id, route.name,
+            static_cast<NEuCon::int32>(route.color & 0x00FFFFFFU) });
+    }
     int activeCount = 0;
 
     for (auto& track : tracks_)
@@ -810,6 +924,11 @@ int EuconHost::ApplyAudioFrame(const AudioFrame& frame)
         cache.focusExecutablePath = strip.focusExecutablePath;
         cache.focusPackageFamilyName = strip.focusPackageFamilyName;
         cache.focusable = strip.role == AudioStripRole::Application;
+        if (strip.role == AudioStripRole::Application)
+        {
+            channel.SetRouteOptions(outputRoutes, strip.outputRouteId,
+                inputRoutes, strip.inputRouteId);
+        }
         channel.ConfigureMeter(frame.monoAudioEnabled, EuconMeterRoles(strip));
         const auto trackType = EuconTrackType(strip.role);
         if (!cache.active || cache.trackType != trackType)
@@ -838,6 +957,10 @@ int EuconHost::ApplyAudioFrame(const AudioFrame& frame)
         {
             channel.SetSelected(selected);
             cache.selected = selected;
+        }
+        if (selected && strip.role == AudioStripRole::Application)
+        {
+            RefreshApplicationControls(*track, fullRefresh);
         }
 
         const auto volumeMatchesPending = cache.volumePending &&
@@ -959,6 +1082,88 @@ bool EuconHost::HandleSurfaceChange(const SurfaceChange& change)
     }
     const auto order = track->route->channelOrder.load();
 
+    if (kind >= 100)
+    {
+        const auto action = static_cast<EuconChannel::AppAction>(kind - 100);
+        const auto audioSlot = track->route->audioSlot.load(std::memory_order_acquire);
+        bool accepted = false;
+        switch (action)
+        {
+        case EuconChannel::AppAction::ResetVolume:
+            accepted = audioController_ && audioController_->QueueVolume(audioSlot, 1.0F);
+            break;
+        case EuconChannel::AppAction::ResetPan:
+            accepted = audioController_ && audioController_->QueuePan(audioSlot, 0.0F);
+            break;
+        case EuconChannel::AppAction::DefaultOutput:
+            accepted = audioController_ &&
+                audioController_->QueueApplicationRoute(track->key, false, L"");
+            break;
+        case EuconChannel::AppAction::DefaultInput:
+            accepted = audioController_ &&
+                audioController_->QueueApplicationRoute(track->key, true, L"");
+            break;
+        case EuconChannel::AppAction::Unmute:
+            accepted = audioController_ && audioController_->QueueMute(audioSlot, false);
+            break;
+        case EuconChannel::AppAction::ClearSolo:
+            accepted = audioController_ && audioController_->QueueClearSolo();
+            break;
+        case EuconChannel::AppAction::WindowFocus:
+            accepted = BringApplicationWindowToFront(track->cache.focusProcessIds,
+                track->cache.focusExecutablePath, track->cache.focusPackageFamilyName);
+            break;
+        case EuconChannel::AppAction::WindowMinimize:
+            accepted = MinimizeApplicationWindow(track->cache.focusProcessIds,
+                track->cache.focusExecutablePath, track->cache.focusPackageFamilyName);
+            break;
+        case EuconChannel::AppAction::WindowMaximize:
+            accepted = SetApplicationWindowMaximized(track->cache.focusProcessIds,
+                track->cache.focusExecutablePath, track->cache.focusPackageFamilyName,
+                value != 0.0F);
+            break;
+        case EuconChannel::AppAction::WindowTopmost:
+            accepted = SetApplicationWindowTopmost(track->cache.focusProcessIds,
+                track->cache.focusExecutablePath, track->cache.focusPackageFamilyName,
+                value != 0.0F);
+            break;
+        default:
+        {
+            if (!mediaController_)
+            {
+                break;
+            }
+            MediaControlAction mediaAction{};
+            switch (action)
+            {
+            case EuconChannel::AppAction::MediaPlayPause:
+                mediaAction = MediaControlAction::PlayPause; break;
+            case EuconChannel::AppAction::MediaPrevious:
+                mediaAction = MediaControlAction::Previous; break;
+            case EuconChannel::AppAction::MediaNext:
+                mediaAction = MediaControlAction::Next; break;
+            case EuconChannel::AppAction::MediaStop:
+                mediaAction = MediaControlAction::Stop; break;
+            case EuconChannel::AppAction::MediaSeek:
+                mediaAction = MediaControlAction::Seek; break;
+            case EuconChannel::AppAction::MediaShuffle:
+                mediaAction = MediaControlAction::Shuffle; break;
+            case EuconChannel::AppAction::MediaRepeat:
+                mediaAction = MediaControlAction::Repeat; break;
+            default:
+                return false;
+            }
+            accepted = mediaController_->Execute(track->cache.focusExecutablePath,
+                track->cache.focusPackageFamilyName, mediaAction, value);
+            break;
+        }
+        }
+        track->cache.appControlRefreshAt = {};
+        FB_TRACE("APP_CONTROL track=%d action=%d value=%.3f accepted=%d", order,
+            static_cast<int>(action), value, accepted ? 1 : 0);
+        return accepted;
+    }
+
     if (kind == 0 || kind == 1)
     {
         const auto volume = std::clamp(value, 0.0F, 1.0F);
@@ -1049,6 +1254,73 @@ bool EuconHost::HandleSurfaceChange(const SurfaceChange& change)
     return false;
 }
 
+void EuconHost::RefreshApplicationControls(TrackState& track, const bool force)
+{
+    if (!track.channel || !track.cache.focusable)
+    {
+        return;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if (!force && now < track.cache.appControlRefreshAt)
+    {
+        return;
+    }
+    track.cache.appControlRefreshAt = now + std::chrono::milliseconds(200);
+
+    const auto window = GetApplicationWindowState(track.cache.focusProcessIds,
+        track.cache.focusExecutablePath, track.cache.focusPackageFamilyName);
+    auto& cache = track.cache;
+    if (force || cache.windowAvailable != window.available ||
+        cache.windowForeground != window.foreground ||
+        cache.windowMinimized != window.minimized ||
+        cache.windowMaximized != window.maximized ||
+        cache.windowTopmost != window.topmost)
+    {
+        track.channel->SetWindowState(window.available, window.foreground,
+            window.minimized, window.maximized, window.topmost);
+        cache.windowAvailable = window.available;
+        cache.windowForeground = window.foreground;
+        cache.windowMinimized = window.minimized;
+        cache.windowMaximized = window.maximized;
+        cache.windowTopmost = window.topmost;
+    }
+
+    const auto media = mediaController_
+        ? mediaController_->GetState(cache.focusExecutablePath,
+            cache.focusPackageFamilyName)
+        : WindowsMediaState{};
+    const auto mediaCapabilities =
+        (media.canPlayPause ? 1U << 0U : 0U) |
+        (media.canPrevious ? 1U << 1U : 0U) |
+        (media.canNext ? 1U << 2U : 0U) |
+        (media.canStop ? 1U << 3U : 0U) |
+        (media.canSeek ? 1U << 4U : 0U) |
+        (media.canShuffle ? 1U << 5U : 0U) |
+        (media.canRepeat ? 1U << 6U : 0U) |
+        (media.hasPosition ? 1U << 7U : 0U);
+    if (force || cache.mediaAvailable != media.available ||
+        cache.mediaPlaying != media.playing ||
+        cache.mediaCapabilities != mediaCapabilities ||
+        cache.mediaShuffle != media.shuffle ||
+        cache.mediaRepeatMode != media.repeatMode ||
+        std::fabs(cache.mediaPosition - media.position) > 0.002F ||
+        cache.mediaTitle != media.title || cache.mediaArtist != media.artist)
+    {
+        track.channel->SetMediaState(media.available, media.playing,
+            media.canPlayPause, media.canPrevious, media.canNext, media.canStop,
+            media.hasPosition, media.canSeek, media.canShuffle, media.shuffle, media.canRepeat,
+            media.repeatMode, media.position, media.title, media.artist);
+        cache.mediaAvailable = media.available;
+        cache.mediaPlaying = media.playing;
+        cache.mediaCapabilities = mediaCapabilities;
+        cache.mediaShuffle = media.shuffle;
+        cache.mediaRepeatMode = media.repeatMode;
+        cache.mediaPosition = media.position;
+        cache.mediaTitle = media.title;
+        cache.mediaArtist = media.artist;
+    }
+}
+
 bool EuconHost::SelectAndFocusTrack(TrackState& track)
 {
     if (!track.cache.focusable)
@@ -1072,8 +1344,11 @@ bool EuconHost::SelectAndFocusTrack(TrackState& track)
         static_cast<unsigned>(track.cache.focusProcessIds.size()),
         track.cache.focusPackageFamilyName.empty() ? 0 : 1,
         track.cache.focusExecutablePath.empty() ? 0 : 1);
-    return BringApplicationWindowToFront(track.cache.focusProcessIds,
+    const auto focused = BringApplicationWindowToFront(track.cache.focusProcessIds,
         track.cache.focusExecutablePath, track.cache.focusPackageFamilyName);
+    track.cache.appControlRefreshAt = {};
+    RefreshApplicationControls(track, true);
+    return focused;
 }
 
 bool EuconHost::DeselectAndMinimizeTrack(TrackState& track)
