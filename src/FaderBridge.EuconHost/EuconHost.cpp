@@ -146,7 +146,8 @@ void EuconHost::FlushPendingMotors()
 }
 
 std::unique_ptr<EuconHost::TrackState> EuconHost::CreateTrack(const int channelOrder,
-    const int audioSlot, const std::wstring& key, const std::wstring& name)
+    const int audioSlot, const std::uint32_t channelColor, const std::wstring& key,
+    const std::wstring& name)
 {
     auto track = std::make_unique<TrackState>();
     track->key = key;
@@ -185,8 +186,10 @@ std::unique_ptr<EuconHost::TrackState> EuconHost::CreateTrack(const int channelO
         }
     };
 
-    track->channel = std::make_unique<EuconChannel>(channelOrder,
-        ApplicationChannelColor(key),
+    const auto resolvedColor = channelColor == AudioStripState::NoChannelColor
+        ? ApplicationChannelColor(key)
+        : static_cast<NEuCon::int32>(channelColor & 0x00FFFFFFU);
+    track->channel = std::make_unique<EuconChannel>(channelOrder, resolvedColor,
         ApplicationPersistenceId(key), name,
         [report](const float value, const NEuCon::uint16 rawIndex,
             const float rawValue) { report(value, 0, rawIndex, rawValue); },
@@ -263,10 +266,12 @@ void EuconHost::ReconcileChannelTopology(const AudioFrame& frame)
         auto* track = FindTrack(strip.key);
         if (!track)
         {
-            auto added = CreateTrack(order, strip.slot, strip.key, strip.name);
+            auto added = CreateTrack(order, strip.slot, strip.channelColor,
+                strip.key, strip.name);
             node_->RegisterProcessor(*added->channel);
             added->channel->PostRegisterMeterInitialization();
-            FB_TRACE("EUCON_TRACK_ADD order=%d slot=%d", order, strip.slot);
+            FB_TRACE("EUCON_TRACK_ADD order=%d slot=%d color=%06X", order, strip.slot,
+                static_cast<unsigned>(strip.channelColor & 0x00FFFFFFU));
             tracks_.push_back(std::move(added));
             continue;
         }

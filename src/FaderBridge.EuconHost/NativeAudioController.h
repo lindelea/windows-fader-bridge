@@ -4,6 +4,7 @@
 
 #include <array>
 #include <atomic>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <thread>
@@ -11,11 +12,14 @@
 
 struct AudioStripState
 {
+    static constexpr std::uint32_t NoChannelColor = 0xFFFFFFFFU;
+
     int slot = 0;
     bool active = false;
     bool muted = false;
     float volume = 0.0F;
     float peakDb = -120.0F;
+    std::uint32_t channelColor = NoChannelColor;
     std::wstring key;
     std::wstring name;
 };

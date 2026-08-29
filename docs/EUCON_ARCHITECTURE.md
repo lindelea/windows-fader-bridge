@@ -74,7 +74,7 @@ Each track exposes standard EUCON semantics where applicable:
 | Dynamic channel processors | Conformant | Active applications are added and removed inside node `Freeze()` / `Thaw()`. |
 | Standard channel model | Conformant | Channel-strip processor, `EuLayoutChannel`, audio track type, standard fader/name/number/meter controls. |
 | Stable persistence IDs | Conformant | Derived from Windows application identity rather than process ID. |
-| Channel color | Verified | `kATRIBID_ChannelColor` is populated with stable `0x00RRGGBB` metadata derived from application identity. S3 rendering was verified; the Surface remains responsible for presentation. |
+| Channel color | Verified | `kATRIBID_ChannelColor` is populated with `0x00RRGGBB` metadata. Packaged apps use their manifest-declared logo rather than an audio helper executable; Win32 apps use the executable icon. Dominant chromatic colors are normalized for LED visibility, meaningful white/grey foregrounds are preserved, and extraction failures use a stable identity palette. S3 rendering was verified with Apple Music, Chrome, PotPlayer, and foobar2000. |
 | Surface-independent capacity | Conformant | Only active processors are registered; the Core Audio ceiling is not a surface strip count. |
 | Callback thread discipline | Mostly conformant | Core Audio writes are queued; remaining SDK calls from callbacks require review. |
 | Track identity and ordering | Verified | Channel Processors are keyed by stable application identity. Mutable atomic routes target the current Core Audio slot; reordering retains the Processor and changes only `ChannelOrder` and channel number as specified by guide section 12.4. Verified smooth and near-zero-latency on the attached S3/Avid Control setup. |

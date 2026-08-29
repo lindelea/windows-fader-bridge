@@ -4,6 +4,7 @@
 #include <Audiopolicy.h>
 #include <Endpointvolume.h>
 #include <Mmdeviceapi.h>
+#include <ShObjIdl.h>
 #include <Shlwapi.h>
 #include <appmodel.h>
 #include <avrt.h>
@@ -16,6 +17,7 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <optional>
 #include <sstream>
 #include <unordered_map>
 
@@ -152,6 +154,82 @@ std::wstring Utf8ToWide(const std::string& value)
     return result;
 }
 
+std::filesystem::path PackageRoot(const std::wstring& packageFullName,
+    const std::wstring& executablePath)
+{
+    auto lowerPath = executablePath;
+    auto lowerPackage = packageFullName;
+    std::transform(lowerPath.begin(), lowerPath.end(), lowerPath.begin(),
+        [](const wchar_t value) { return static_cast<wchar_t>(std::towlower(value)); });
+    std::transform(lowerPackage.begin(), lowerPackage.end(), lowerPackage.begin(),
+        [](const wchar_t value) { return static_cast<wchar_t>(std::towlower(value)); });
+    const auto packageOffset = lowerPath.find(lowerPackage);
+    return packageOffset == std::wstring::npos ? std::filesystem::path{} :
+        std::filesystem::path(executablePath.substr(0,
+            packageOffset + packageFullName.size()));
+}
+
+std::string ReadPackageManifest(const std::filesystem::path& packageRoot)
+{
+    std::ifstream manifest(packageRoot / L"AppxManifest.xml", std::ios::in | std::ios::binary);
+    std::ostringstream contents;
+    contents << manifest.rdbuf();
+    return contents.str();
+}
+
+std::filesystem::path PackageLogoPath(const std::wstring& packageFullName,
+    const std::wstring& executablePath)
+{
+    const auto packageRoot = PackageRoot(packageFullName, executablePath);
+    if (packageRoot.empty())
+    {
+        return {};
+    }
+    const auto xml = ReadPackageManifest(packageRoot);
+    auto lowerXml = xml;
+    std::transform(lowerXml.begin(), lowerXml.end(), lowerXml.begin(),
+        [](const unsigned char value) { return static_cast<char>(std::tolower(value)); });
+    constexpr std::string_view attribute = "square44x44logo=\"";
+    const auto attributeStart = lowerXml.find(attribute);
+    if (attributeStart == std::string::npos)
+    {
+        return {};
+    }
+    const auto valueStart = attributeStart + attribute.size();
+    const auto valueEnd = lowerXml.find('"', valueStart);
+    if (valueEnd == std::string::npos)
+    {
+        return {};
+    }
+    auto relative = std::filesystem::path(Utf8ToWide(
+        xml.substr(valueStart, valueEnd - valueStart)));
+    auto exact = packageRoot / relative;
+    if (std::filesystem::exists(exact))
+    {
+        return exact;
+    }
+
+    const auto directory = exact.parent_path();
+    const auto stem = exact.stem().wstring();
+    const std::wstring preferredNames[] =
+    {
+        stem + L".targetsize-256_altform-unplated.png",
+        stem + L".targetsize-96_altform-unplated.png",
+        stem + L".scale-400.png",
+        stem + L".scale-200.png",
+        stem + L".scale-100.png",
+    };
+    for (const auto& name : preferredNames)
+    {
+        const auto candidate = directory / name;
+        if (std::filesystem::exists(candidate))
+        {
+            return candidate;
+        }
+    }
+    return {};
+}
+
 std::wstring PackageDisplayName(const std::wstring& packageFullName,
     const std::wstring& executablePath)
 {
@@ -166,22 +244,10 @@ std::wstring PackageDisplayName(const std::wstring& packageFullName,
     }
 
     std::wstring result;
-    auto lowerPath = executablePath;
-    auto lowerPackage = packageFullName;
-    std::transform(lowerPath.begin(), lowerPath.end(), lowerPath.begin(),
-        [](const wchar_t value) { return static_cast<wchar_t>(std::towlower(value)); });
-    std::transform(lowerPackage.begin(), lowerPackage.end(), lowerPackage.begin(),
-        [](const wchar_t value) { return static_cast<wchar_t>(std::towlower(value)); });
-    const auto packageOffset = lowerPath.find(lowerPackage);
-    if (packageOffset != std::wstring::npos)
+    const auto packageRoot = PackageRoot(packageFullName, executablePath);
+    if (!packageRoot.empty())
     {
-        const auto packageRoot = executablePath.substr(0,
-            packageOffset + packageFullName.size());
-        std::ifstream manifest(std::filesystem::path(packageRoot) / L"AppxManifest.xml",
-            std::ios::in | std::ios::binary);
-        std::ostringstream contents;
-        contents << manifest.rdbuf();
-        const auto xml = contents.str();
+        const auto xml = ReadPackageManifest(packageRoot);
         auto lowerXml = xml;
         std::transform(lowerXml.begin(), lowerXml.end(), lowerXml.begin(),
             [](const unsigned char value) { return static_cast<char>(std::tolower(value)); });
@@ -228,7 +294,247 @@ std::wstring PackageDisplayName(const std::wstring& packageFullName,
     return result;
 }
 
-std::wstring ProcessName(const DWORD processId)
+struct ProcessMetadata
+{
+    std::wstring name;
+    std::uint32_t channelColor = AudioStripState::NoChannelColor;
+};
+
+struct ColorSample
+{
+    double hue = 0.0;
+    double saturation = 0.0;
+    double value = 0.0;
+    double weight = 0.0;
+};
+
+std::uint32_t HsvToRgb(const double hue, const double saturation, const double value)
+{
+    const auto chroma = value * saturation;
+    const auto sector = hue / 60.0;
+    const auto x = chroma * (1.0 - std::fabs(std::fmod(sector, 2.0) - 1.0));
+    double red = 0.0;
+    double green = 0.0;
+    double blue = 0.0;
+    if (sector < 1.0)
+    {
+        red = chroma; green = x;
+    }
+    else if (sector < 2.0)
+    {
+        red = x; green = chroma;
+    }
+    else if (sector < 3.0)
+    {
+        green = chroma; blue = x;
+    }
+    else if (sector < 4.0)
+    {
+        green = x; blue = chroma;
+    }
+    else if (sector < 5.0)
+    {
+        red = x; blue = chroma;
+    }
+    else
+    {
+        red = chroma; blue = x;
+    }
+    const auto match = value - chroma;
+    const auto toByte = [match](const double component)
+    {
+        return static_cast<std::uint32_t>(std::lround(
+            std::clamp(component + match, 0.0, 1.0) * 255.0));
+    };
+    return (toByte(red) << 16U) | (toByte(green) << 8U) | toByte(blue);
+}
+
+std::optional<std::uint32_t> ExtractIconColor(const std::wstring& executablePath)
+{
+    static std::unordered_map<std::wstring, std::optional<std::uint32_t>> cache;
+    if (executablePath.empty())
+    {
+        return std::nullopt;
+    }
+    if (const auto found = cache.find(executablePath); found != cache.end())
+    {
+        return found->second;
+    }
+
+    std::optional<std::uint32_t> result;
+    ComPtr<IShellItemImageFactory> imageFactory;
+    if (SUCCEEDED(SHCreateItemFromParsingName(executablePath.c_str(), nullptr,
+            IID_PPV_ARGS(imageFactory.GetAddressOf()))))
+    {
+        HBITMAP bitmap = nullptr;
+        constexpr SIZE imageSize{ 64, 64 };
+        auto lowerPath = executablePath;
+        std::transform(lowerPath.begin(), lowerPath.end(), lowerPath.begin(),
+            [](const wchar_t value) { return static_cast<wchar_t>(std::towlower(value)); });
+        const auto extension = std::filesystem::path(lowerPath).extension().wstring();
+        const auto isImage = extension == L".png" || extension == L".jpg" ||
+            extension == L".jpeg" || extension == L".bmp";
+        const auto imageFlags = isImage
+            ? static_cast<SIIGBF>(SIIGBF_THUMBNAILONLY | SIIGBF_BIGGERSIZEOK | SIIGBF_SCALEUP)
+            : static_cast<SIIGBF>(SIIGBF_ICONONLY | SIIGBF_BIGGERSIZEOK);
+        if (SUCCEEDED(imageFactory->GetImage(imageSize, imageFlags, &bitmap)) && bitmap)
+        {
+            BITMAP object{};
+            if (GetObjectW(bitmap, sizeof(object), &object) != 0 &&
+                object.bmWidth > 0 && object.bmHeight > 0)
+            {
+                BITMAPINFO information{};
+                information.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+                information.bmiHeader.biWidth = object.bmWidth;
+                information.bmiHeader.biHeight = -object.bmHeight;
+                information.bmiHeader.biPlanes = 1;
+                information.bmiHeader.biBitCount = 32;
+                information.bmiHeader.biCompression = BI_RGB;
+                std::vector<std::uint32_t> pixels(
+                    static_cast<size_t>(object.bmWidth) * static_cast<size_t>(object.bmHeight));
+                const auto screen = GetDC(nullptr);
+                const auto rows = screen ? GetDIBits(screen, bitmap, 0,
+                    static_cast<UINT>(object.bmHeight), pixels.data(), &information,
+                    DIB_RGB_COLORS) : 0;
+                if (screen)
+                {
+                    ReleaseDC(nullptr, screen);
+                }
+
+                if (rows != 0)
+                {
+                    constexpr int binCount = 24;
+                    constexpr double degreesPerBin = 360.0 / static_cast<double>(binCount);
+                    std::array<double, binCount> histogram{};
+                    std::vector<ColorSample> samples;
+                    samples.reserve(pixels.size());
+                    double chromaticCoverage = 0.0;
+                    double brightNeutralCoverage = 0.0;
+                    for (const auto pixel : pixels)
+                    {
+                        const auto blue = static_cast<double>(pixel & 0xFFU) / 255.0;
+                        const auto green = static_cast<double>((pixel >> 8U) & 0xFFU) / 255.0;
+                        const auto red = static_cast<double>((pixel >> 16U) & 0xFFU) / 255.0;
+                        auto alpha = static_cast<double>((pixel >> 24U) & 0xFFU) / 255.0;
+                        if (alpha == 0.0 && (red > 0.0 || green > 0.0 || blue > 0.0))
+                        {
+                            alpha = 1.0;
+                        }
+                        const auto maximum = std::max({ red, green, blue });
+                        const auto minimum = std::min({ red, green, blue });
+                        const auto delta = maximum - minimum;
+                        const auto saturation = maximum <= 0.0 ? 0.0 : delta / maximum;
+                        if (alpha < 0.1 || maximum < 0.18)
+                        {
+                            continue;
+                        }
+                        const auto coverage = alpha * (0.35 + (0.65 * maximum));
+                        if (saturation < 0.18)
+                        {
+                            if (maximum >= 0.62)
+                            {
+                                brightNeutralCoverage += coverage;
+                            }
+                            continue;
+                        }
+                        chromaticCoverage += coverage;
+
+                        double hue = 0.0;
+                        if (delta > 0.0)
+                        {
+                            if (maximum == red)
+                            {
+                                hue = 60.0 * std::fmod((green - blue) / delta, 6.0);
+                            }
+                            else if (maximum == green)
+                            {
+                                hue = 60.0 * (((blue - red) / delta) + 2.0);
+                            }
+                            else
+                            {
+                                hue = 60.0 * (((red - green) / delta) + 4.0);
+                            }
+                            if (hue < 0.0)
+                            {
+                                hue += 360.0;
+                            }
+                        }
+                        const auto weight = alpha * saturation * saturation *
+                            (0.35 + (0.65 * maximum));
+                        const auto bin = std::min(binCount - 1,
+                            static_cast<int>(hue / degreesPerBin));
+                        histogram[bin] += weight;
+                        samples.push_back({ hue, saturation, maximum, weight });
+                    }
+
+                    // A genuinely white/grey application icon is meaningful
+                    // identity, not a failed color extraction. Preserve it
+                    // when neutral bright pixels form the dominant foreground.
+                    if (brightNeutralCoverage > chromaticCoverage * 1.35 &&
+                        brightNeutralCoverage > 1.0)
+                    {
+                        result = 0x00FFFFFFU;
+                    }
+                    else if (!samples.empty())
+                    {
+                        int dominantBin = 0;
+                        double dominantWeight = -1.0;
+                        for (int bin = 0; bin < binCount; ++bin)
+                        {
+                            const auto neighborhood = histogram[(bin + binCount - 1) % binCount] +
+                                histogram[bin] + histogram[(bin + 1) % binCount];
+                            if (neighborhood > dominantWeight)
+                            {
+                                dominantWeight = neighborhood;
+                                dominantBin = bin;
+                            }
+                        }
+
+                        constexpr double pi = 3.14159265358979323846;
+                        double sine = 0.0;
+                        double cosine = 0.0;
+                        double saturation = 0.0;
+                        double value = 0.0;
+                        double totalWeight = 0.0;
+                        for (const auto& sample : samples)
+                        {
+                            const auto sampleBin = std::min(binCount - 1,
+                                static_cast<int>(sample.hue / degreesPerBin));
+                            auto distance = std::abs(sampleBin - dominantBin);
+                            distance = std::min(distance, binCount - distance);
+                            if (distance > 1)
+                            {
+                                continue;
+                            }
+                            const auto radians = sample.hue * pi / 180.0;
+                            sine += std::sin(radians) * sample.weight;
+                            cosine += std::cos(radians) * sample.weight;
+                            saturation += sample.saturation * sample.weight;
+                            value += sample.value * sample.weight;
+                            totalWeight += sample.weight;
+                        }
+                        if (totalWeight > 0.0)
+                        {
+                            auto hue = std::atan2(sine, cosine) * 180.0 / pi;
+                            if (hue < 0.0)
+                            {
+                                hue += 360.0;
+                            }
+                            saturation = std::max(0.72, saturation / totalWeight);
+                            value = std::clamp(value / totalWeight, 0.72, 1.0);
+                            result = HsvToRgb(hue, saturation, value);
+                        }
+                    }
+                }
+            }
+            DeleteObject(bitmap);
+        }
+    }
+    cache.emplace(executablePath, result);
+    return result;
+}
+
+ProcessMetadata ProcessInformation(const DWORD processId)
 {
     const auto process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, processId);
     if (!process)
@@ -241,11 +547,12 @@ std::wstring ProcessName(const DWORD processId)
 
     std::array<wchar_t, 32768> path{};
     DWORD length = static_cast<DWORD>(path.size());
-    std::wstring result;
+    ProcessMetadata result;
+    std::wstring executablePath;
     std::wstring packageFullName;
     if (QueryFullProcessImageNameW(process, 0, path.data(), &length))
     {
-        result.assign(path.data(), length);
+        executablePath.assign(path.data(), length);
         UINT32 packageLength = 0;
         if (GetPackageFullName(process, &packageLength, nullptr) == ERROR_INSUFFICIENT_BUFFER &&
             packageLength > 1U)
@@ -260,21 +567,34 @@ std::wstring ProcessName(const DWORD processId)
                 packageFullName.clear();
             }
         }
-        if (const auto packageName = PackageDisplayName(packageFullName, result);
+        if (const auto packageName = PackageDisplayName(packageFullName, executablePath);
             !packageName.empty())
         {
-            CloseHandle(process);
-            return packageName;
+            result.name = packageName;
         }
-        const auto separator = result.find_last_of(L"\\/");
-        if (separator != std::wstring::npos)
+        else
         {
-            result.erase(0, separator + 1);
+            result.name = executablePath;
+            const auto separator = result.name.find_last_of(L"\\/");
+            if (separator != std::wstring::npos)
+            {
+                result.name.erase(0, separator + 1);
+            }
+            const auto extension = result.name.find_last_of(L'.');
+            if (extension != std::wstring::npos)
+            {
+                result.name.resize(extension);
+            }
         }
-        const auto extension = result.find_last_of(L'.');
-        if (extension != std::wstring::npos)
+        auto colorSource = executablePath;
+        if (const auto packageLogo = PackageLogoPath(packageFullName, executablePath);
+            !packageLogo.empty())
         {
-            result.resize(extension);
+            colorSource = packageLogo.wstring();
+        }
+        if (const auto color = ExtractIconColor(colorSource))
+        {
+            result.channelColor = *color;
         }
     }
     CloseHandle(process);
@@ -310,6 +630,7 @@ struct NativeAudioController::Impl
     {
         std::wstring key;
         std::wstring name;
+        std::uint32_t channelColor = AudioStripState::NoChannelColor;
         std::vector<Session> sessions;
     };
 
@@ -317,6 +638,7 @@ struct NativeAudioController::Impl
     {
         std::wstring key;
         std::wstring name;
+        std::uint32_t channelColor = AudioStripState::NoChannelColor;
         std::vector<Session> sessions;
         std::wstring preferredVolumeSession;
         std::wstring preferredMuteSession;
@@ -421,12 +743,12 @@ struct NativeAudioController::Impl
             {
                 continue;
             }
-            const auto name = ProcessName(processId);
-            if (name.empty())
+            const auto process = ProcessInformation(processId);
+            if (process.name.empty())
             {
                 continue;
             }
-            const auto key = StableKey(name);
+            const auto key = StableKey(process.name);
 
             ComPtr<ISimpleAudioVolume> volume;
             ComPtr<IAudioMeterInformation> meter;
@@ -453,7 +775,11 @@ struct NativeAudioController::Impl
 
             auto& app = applications[key];
             app.key = key;
-            app.name = name;
+            app.name = process.name;
+            if (app.channelColor == AudioStripState::NoChannelColor)
+            {
+                app.channelColor = process.channelColor;
+            }
             app.sessions.push_back({ processId, persistentAppIdentity,
                 false, 0.0F, false, false,
                 std::move(identifier),
@@ -467,6 +793,7 @@ struct NativeAudioController::Impl
             if (found != applications.end())
             {
                 slot.name = found->second.name;
+                slot.channelColor = found->second.channelColor;
                 auto refreshedSessions = std::move(found->second.sessions);
                 for (auto& refreshed : refreshedSessions)
                 {
@@ -520,6 +847,7 @@ struct NativeAudioController::Impl
             }
             empty->key = key;
             empty->name = application.name;
+            empty->channelColor = application.channelColor;
             empty->sessions = std::move(application.sessions);
             for (auto& session : empty->sessions)
             {
@@ -571,6 +899,8 @@ struct NativeAudioController::Impl
             strip.active = !slot.sessions.empty();
             strip.key = strip.active ? slot.key : L"";
             strip.name = strip.active ? slot.name : L"";
+            strip.channelColor = strip.active
+                ? slot.channelColor : AudioStripState::NoChannelColor;
             if (strip.active)
             {
                 struct Observation

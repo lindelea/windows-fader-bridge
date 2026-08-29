@@ -99,6 +99,6 @@ private:
     void SetFaderFromWindows(TrackState& track, float volume);
     void ScheduleFaderFromWindows(TrackState& track, float volume);
     std::unique_ptr<TrackState> CreateTrack(int channelOrder, int audioSlot,
-        const std::wstring& key, const std::wstring& name);
+        std::uint32_t channelColor, const std::wstring& key, const std::wstring& name);
     void ReconcileChannelTopology(const AudioFrame& frame);
 };
