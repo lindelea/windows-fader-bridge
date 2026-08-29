@@ -42,17 +42,20 @@ float NormalizedToCoordinate(const float value)
 EuconChannel::EuconChannel(const int channelOrder, const NEuCon::int32 channelColor,
     const std::wstring& persistenceId,
     const std::wstring& displayName, ChangeHandler faderHandler,
-    ChangeHandler knobHandler, ChangeHandler muteHandler)
+    ChangeHandler knobHandler, ChangeHandler muteHandler,
+    ChangeHandler recordArmHandler, const NEuCon::int32 trackType,
+    const std::wstring& channelType)
     : channelOrder_(channelOrder),
       faderHandler_(std::move(faderHandler)),
       knobHandler_(std::move(knobHandler)),
       muteHandler_(std::move(muteHandler)),
+      recordArmHandler_(std::move(recordArmHandler)),
       fader_(this), name_(this), number_(this), meter_(this), knobSet_(this), knob_(this)
 {
     SetAttribute(kATRIBID_ProcessorType, kProcType_ChannelStrip);
     SetAttribute(kATRIBID_LayoutRule0, kRUL_EuLayoutChannel);
-    SetAttribute(kATRIBID_TrackType, kTRACK_Audio);
-    SetAttribute(kATRIBID_ChannelType, L"Audio");
+    SetAttribute(kATRIBID_TrackType, trackType == 0 ? kTRACK_Audio : trackType);
+    SetAttribute(kATRIBID_ChannelType, channelType);
     SetAttribute(kATRIBID_ChannelOrder, channelOrder);
     // Getting Started with EuCon 12.9: surface channel color is standard
     // 0x00RRGGBB track metadata. The surface decides how to render it.
@@ -65,16 +68,49 @@ EuconChannel::EuconChannel(const int channelOrder, const NEuCon::int32 channelCo
         std::to_wstring(channelOrder));
     InitializeMeter();
     InitializeKnob();
+    if (recordArmHandler_)
+    {
+        InitializeRecordArm();
+    }
 }
 
 EuconChannel::~EuconChannel()
 {
+    if (recordArm_)
+    {
+        RemoveControl(*recordArm_);
+        recordArm_.reset();
+    }
     knobSet_.Remove(knobMemberId_);
     RemoveControl(knobSet_);
     RemoveControl(meter_);
     RemoveControl(number_);
     RemoveControl(name_);
     RemoveControl(fader_);
+}
+
+void EuconChannel::InitializeRecordArm()
+{
+    // This channel uses the standard Record Arm placement as a default-device
+    // selection request. It is deliberately one-shot: the surface press does
+    // not own persistent state. Windows' authoritative default endpoint owns
+    // the independently overridden LED.
+    recordArm_ = std::make_unique<EuControlSwitch>(this);
+    recordArm_->SetId(RecordArmId);
+    recordArm_->SetAttribute(kATRIBID_LayoutName0, EuLayoutChannel::kNAM_RecordArm);
+    EuPrimitiveControl* primitive = nullptr;
+    if (recordArm_->GetPrimitive(EuControlSwitch::kID_Switch, &primitive) == kERR_OK &&
+        primitive)
+    {
+        primitive->Initialize(kTYP_Int, 1U);
+        primitive->LoadValueTableInterpolated(0, 0);
+        if (auto* switchPrimitive = dynamic_cast<EuPrimitiveSwitch*>(primitive))
+        {
+            switchPrimitive->SetSwitchMode(kSWITCH_OneShot);
+        }
+    }
+    recordArm_->SetLedOverride(true);
+    AddControl(*recordArm_);
 }
 
 void EuconChannel::InitializeFader()
@@ -291,6 +327,29 @@ void EuconChannel::SetMuted(const bool muted)
     }
 }
 
+void EuconChannel::SetRecordArmed(const bool armed)
+{
+    if (!recordArm_)
+    {
+        return;
+    }
+    EuPrimitiveControl* primitive = nullptr;
+    if (recordArm_->GetPrimitive(EuControlSwitch::kID_Led, &primitive) == kERR_OK &&
+        primitive)
+    {
+        primitive->SetCurrentIndex(static_cast<NEuCon::uint16>(
+            armed ? kLEDStatus_On : kLEDStatus_Off));
+        primitive->Refresh();
+    }
+}
+
+void EuconChannel::SetTrackMetadata(const NEuCon::int32 trackType,
+    const std::wstring& channelType)
+{
+    SetAttribute2(kATRIBID_TrackType, trackType, true);
+    SetAttribute2(kATRIBID_ChannelType, channelType, true);
+}
+
 void EuconChannel::PostRegisterMeterInitialization()
 {
     const auto meterTypeResult = meter_.SetAttribute2(
@@ -434,6 +493,15 @@ void EuconChannel::OnPrimitiveCallback(const tEVT eventType, NEuCon::uint32,
             led->Refresh();
         }
         muteHandler_(static_cast<float>(value), newValueIndex,
+            static_cast<float>(value));
+    }
+    else if (controlId == RecordArmId && recordArmHandler_)
+    {
+        NEuCon::int32 value = 0;
+        affectedPrimitive->GetValueAt(newValueIndex, value);
+        FB_TRACE("RECORD_ARM_EVT track=%d state=%d index=%u", channelOrder_.load(), value,
+            static_cast<unsigned>(newValueIndex));
+        recordArmHandler_(static_cast<float>(value), newValueIndex,
             static_cast<float>(value));
     }
     else if (controlId == KnobSetId && arrayMemberControlId == knobMemberId_ &&

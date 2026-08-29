@@ -60,6 +60,8 @@ private:
         bool volumePending = false;
         int pendingVolumeKind = 0;
         bool mutePending = false;
+        bool isDefault = false;
+        int trackType = 0;
         float volume = 0.0F;
         float peakDb = -120.0F;
         float requestedVolume = 0.0F;
@@ -98,7 +100,7 @@ private:
     TrackState* FindTrack(const std::wstring& key) noexcept;
     void SetFaderFromWindows(TrackState& track, float volume);
     void ScheduleFaderFromWindows(TrackState& track, float volume);
-    std::unique_ptr<TrackState> CreateTrack(int channelOrder, int audioSlot,
-        std::uint32_t channelColor, const std::wstring& key, const std::wstring& name);
+    std::unique_ptr<TrackState> CreateTrack(int channelOrder,
+        const AudioStripState& strip);
     void ReconcileChannelTopology(const AudioFrame& frame);
 };

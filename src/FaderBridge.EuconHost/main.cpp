@@ -30,6 +30,7 @@ const wchar_t* ChangeKindName(const int kind)
     case 0: return L"Fader";
     case 1: return L"Knob";
     case 2: return L"Mute";
+    case 3: return L"Default device";
     default: return L"Unknown";
     }
 }
@@ -45,7 +46,7 @@ void PaintWindow(const HWND window)
     SetBkMode(dc, TRANSPARENT);
 
     std::wostringstream text;
-    text << L"Windows applications (linear 0–100% mapping)\r\n\r\n";
+    text << L"Windows audio channels (linear 0–100% mapping)\r\n\r\n";
     text << std::fixed << std::setprecision(0);
     int visibleApplications = 0;
     for (int slot = 0; slot < EuconHost::MaxChannelCount; ++slot)
@@ -60,6 +61,10 @@ void PaintWindow(const HWND window)
              << std::left << std::setw(30) << strip.name.substr(0, 29) << std::right
              << std::setw(4) << (strip.volume * 100.0F) << L"%  "
              << (strip.muted ? L"MUTE" : L"    ");
+        if (strip.defaultSelectable)
+        {
+            text << (strip.isDefault ? L"  REC/default" : L"  REC/select");
+        }
         text << L"\r\n";
     }
     if (visibleApplications == 0)
@@ -73,7 +78,7 @@ void PaintWindow(const HWND window)
         text << L"Last EUCON surface: CH" << (g_lastChannel + 1) << L" "
              << ChangeKindName(g_lastKind) << L"    raw index " << g_lastRawIndex
              << L"    table value ";
-        if (g_lastKind == 2)
+        if (g_lastKind == 2 || g_lastKind == 3)
         {
             text << (g_lastRawTableValue == 0.0F ? L"Off" : L"On");
         }
@@ -136,7 +141,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         // Update the title before the command write so raw hardware feedback is
         // never delayed by Windows audio-session work.
         g_lastCommandSent = g_host->HandleSurfaceChange(*change);
-        if (g_lastKind == 2)
+        if (g_lastKind == 2 || g_lastKind == 3)
         {
             InvalidateRect(window, nullptr, FALSE);
         }
@@ -170,7 +175,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         {
             g_activeCount = activeCount;
             const auto title = L"FaderBridge EUCON — " + std::to_wstring(activeCount) +
-                L" Windows audio apps";
+                L" Windows audio channels";
             SetWindowTextW(window, title.c_str());
             visibleStateChanged = true;
         }

@@ -4,11 +4,13 @@
 #include "EuControlKnobCell.h"
 #include "EuControlKnobCellArray.h"
 #include "EuControlMultiMeter.h"
+#include "EuControlSwitch.h"
 #include "EuControlTextDisplay.h"
 #include "EuProcessor.h"
 
 #include <atomic>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <string>
 
@@ -23,7 +25,9 @@ public:
     EuconChannel(int channelOrder, NEuCon::int32 channelColor,
                  const std::wstring& persistenceId,
                  const std::wstring& displayName, ChangeHandler faderHandler,
-                 ChangeHandler knobHandler, ChangeHandler muteHandler);
+                 ChangeHandler knobHandler, ChangeHandler muteHandler,
+                 ChangeHandler recordArmHandler = {}, NEuCon::int32 trackType = 0,
+                 const std::wstring& channelType = L"Audio");
     ~EuconChannel() override;
 
     void SetFaderNormalized(float value);
@@ -32,6 +36,8 @@ public:
     void SetOrder(int channelOrder);
     void ApplyPendingFaderRebound();
     void SetMuted(bool muted);
+    void SetRecordArmed(bool armed);
+    void SetTrackMetadata(NEuCon::int32 trackType, const std::wstring& channelType);
     void PostRegisterMeterInitialization();
     void SetMeterVisibility(bool visible, tVisibilityHandle handle, tEuMeterFormat format);
     void WriteMeterDb(EuBatchedMeterWriter& writer, float valueDb, bool clip);
@@ -49,6 +55,7 @@ private:
         NumberId,
         MeterId,
         KnobSetId,
+        RecordArmId,
     };
 
     void InitializeFader();
@@ -56,11 +63,13 @@ private:
         NEuCon::int32 layoutName, const std::wstring& text);
     void InitializeMeter();
     void InitializeKnob();
+    void InitializeRecordArm();
 
     std::atomic<int> channelOrder_;
     ChangeHandler faderHandler_;
     ChangeHandler knobHandler_;
     ChangeHandler muteHandler_;
+    ChangeHandler recordArmHandler_;
 
     EuControlFader fader_;
     EuControlTextDisplay name_;
@@ -68,6 +77,7 @@ private:
     EuControlMultiMeter meter_;
     EuControlKnobCellArray knobSet_;
     EuControlKnobCell knob_;
+    std::unique_ptr<EuControlSwitch> recordArm_;
     NEuCon::uint32 knobMemberId_ = 0;
     std::atomic_bool faderReboundPending_ = false;
     std::atomic_bool faderTouched_ = false;

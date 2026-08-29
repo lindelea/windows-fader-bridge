@@ -57,6 +57,30 @@ Core Audio sessions or restarts its processes. Its stable application key is
 the EUCON persistence identity. Core Audio slot numbers are transient routing
 details, not EUCON track identity.
 
+Windows audio endpoints are also logical mixer tracks. Their persistent
+identity is the Windows endpoint ID, never a transient slot or a physical
+EUCON strip. Only `DEVICE_STATE_ACTIVE` endpoints are published; this includes
+devices Windows describes as ready and excludes disabled devices. Render
+endpoints use the standard Monitor track type, the current default render
+endpoint uses Master, and capture endpoints use Input.
+
+Endpoint channels expose the same standard volume, mute, and meter controls as
+app channels. Their standard channel Record Arm placement is intentionally
+reinterpreted as a one-of-N default-endpoint selector within each Windows data
+flow. It is initialized as a one-shot request control with an application-owned
+LED, not as a toggling state switch. Pressing Rec queues a Windows
+default-endpoint request; the authoritative Core Audio default state then
+drives every Rec LED. Default state never participates in channel ordering.
+The endpoint ID keeps the same Processor, layouts, direct assignments, and
+banked identity stable when the default changes.
+
+Endpoint enumeration, volume, mute, metering, and default-change notification
+use documented Windows Core Audio interfaces. Microsoft does not publish a
+desktop API for changing the default endpoint. That write is isolated behind
+the `IPolicyConfig::SetDefaultEndpoint` compatibility boundary and applies the
+Console, Multimedia, and Communications roles together. Failures must not
+modify EUCON state optimistically; the next endpoint frame remains authoritative.
+
 Each track exposes standard EUCON semantics where applicable:
 
 - channel-strip processor and audio track type;

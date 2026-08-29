@@ -34,11 +34,11 @@ unsigned long long ApplicationIdentityHash(const std::wstring& key)
     return hash;
 }
 
-std::wstring ApplicationPersistenceId(const std::wstring& key)
+std::wstring TrackPersistenceId(const std::wstring& key)
 {
     // Stable FNV-1a hash: EuControl layouts/assignments can recognize an app
     // after process restarts even when its internal CoreAudio slot changes.
-    return L"FaderBridge.WindowsApp." + std::to_wstring(ApplicationIdentityHash(key));
+    return L"FaderBridge.WindowsTrack." + std::to_wstring(ApplicationIdentityHash(key));
 }
 
 NEuCon::int32 ApplicationChannelColor(const std::wstring& key)
@@ -56,6 +56,17 @@ NEuCon::int32 ApplicationChannelColor(const std::wstring& key)
         0x00FFFF00, // yellow
     };
     return colors[ApplicationIdentityHash(key) % std::size(colors)];
+}
+
+NEuCon::int32 EuconTrackType(const AudioStripRole role)
+{
+    switch (role)
+    {
+    case AudioStripRole::OutputDevice: return kTRACK_Monitor;
+    case AudioStripRole::MasterOutput: return kTRACK_Master;
+    case AudioStripRole::InputDevice: return kTRACK_Input;
+    default: return kTRACK_Audio;
+    }
 }
 
 template<typename TDataVector>
@@ -146,16 +157,16 @@ void EuconHost::FlushPendingMotors()
 }
 
 std::unique_ptr<EuconHost::TrackState> EuconHost::CreateTrack(const int channelOrder,
-    const int audioSlot, const std::uint32_t channelColor, const std::wstring& key,
-    const std::wstring& name)
+    const AudioStripState& strip)
 {
     auto track = std::make_unique<TrackState>();
-    track->key = key;
+    track->key = strip.key;
     track->route = std::make_shared<TrackRoute>();
-    track->route->audioSlot.store(audioSlot);
+    track->route->audioSlot.store(strip.slot);
     track->route->channelOrder.store(channelOrder);
 
     const auto route = track->route;
+    const auto key = strip.key;
     const auto report = [this, route, key](const float value, const int kind,
         const NEuCon::uint16 rawIndex, const float rawTableValue)
     {
@@ -164,8 +175,8 @@ std::unique_ptr<EuconHost::TrackState> EuconHost::CreateTrack(const int channelO
         bool commandQueued = false;
         if (audioController_ && audioSlot >= 0)
         {
-            commandQueued = kind == 2
-                ? audioController_->QueueMute(audioSlot, value != 0.0F)
+            commandQueued = kind == 2 ? audioController_->QueueMute(audioSlot, value != 0.0F)
+                : kind == 3 ? audioController_->QueueSetDefault(audioSlot)
                 : audioController_->QueueVolume(audioSlot, value);
         }
         FB_TRACE("SURFACE_QUEUE track=%d slot=%d kind=%d value=%.4f queued=%d",
@@ -186,18 +197,29 @@ std::unique_ptr<EuconHost::TrackState> EuconHost::CreateTrack(const int channelO
         }
     };
 
-    const auto resolvedColor = channelColor == AudioStripState::NoChannelColor
+    const auto resolvedColor = strip.channelColor == AudioStripState::NoChannelColor
         ? ApplicationChannelColor(key)
-        : static_cast<NEuCon::int32>(channelColor & 0x00FFFFFFU);
+        : static_cast<NEuCon::int32>(strip.channelColor & 0x00FFFFFFU);
+    EuconChannel::ChangeHandler recordArmHandler;
+    if (strip.defaultSelectable)
+    {
+        recordArmHandler = [report](const float value, const NEuCon::uint16 rawIndex,
+            const float rawValue) { report(value, 3, rawIndex, rawValue); };
+    }
     track->channel = std::make_unique<EuconChannel>(channelOrder, resolvedColor,
-        ApplicationPersistenceId(key), name,
+        TrackPersistenceId(key), strip.name,
         [report](const float value, const NEuCon::uint16 rawIndex,
             const float rawValue) { report(value, 0, rawIndex, rawValue); },
         [report](const float value, const NEuCon::uint16 rawIndex,
             const float rawValue) { report(value, 1, rawIndex, rawValue); },
         [report](const float value, const NEuCon::uint16 rawIndex,
-            const float rawValue) { report(value, 2, rawIndex, rawValue); });
+            const float rawValue) { report(value, 2, rawIndex, rawValue); },
+        std::move(recordArmHandler), EuconTrackType(strip.role),
+        strip.sortGroup == 0 ? L"Output" : strip.sortGroup == 1 ? L"Input" : L"Audio");
     track->channel->SetMuted(false);
+    track->channel->SetRecordArmed(strip.isDefault);
+    track->cache.isDefault = strip.isDefault;
+    track->cache.trackType = EuconTrackType(strip.role);
     return track;
 }
 
@@ -213,6 +235,17 @@ void EuconHost::ReconcileChannelTopology(const AudioFrame& frame)
             desired.push_back(&strip);
         }
     }
+    std::stable_sort(desired.begin(), desired.end(), [](const auto* left, const auto* right)
+    {
+        if (left->sortGroup != right->sortGroup)
+        {
+            return left->sortGroup < right->sortGroup;
+        }
+        // Default-device state must never affect channel identity or order.
+        // EuControl owns physical assignment/banking, and the endpoint's
+        // persistent Processor follows that assignment exactly like an app.
+        return left->name < right->name;
+    });
 
     bool changed = tracks_.size() != desired.size();
     for (size_t index = 0; !changed && index < desired.size(); ++index)
@@ -266,8 +299,7 @@ void EuconHost::ReconcileChannelTopology(const AudioFrame& frame)
         auto* track = FindTrack(strip.key);
         if (!track)
         {
-            auto added = CreateTrack(order, strip.slot, strip.channelColor,
-                strip.key, strip.name);
+            auto added = CreateTrack(order, strip);
             node_->RegisterProcessor(*added->channel);
             added->channel->PostRegisterMeterInitialization();
             FB_TRACE("EUCON_TRACK_ADD order=%d slot=%d color=%06X", order, strip.slot,
@@ -277,6 +309,13 @@ void EuconHost::ReconcileChannelTopology(const AudioFrame& frame)
         }
 
         track->route->audioSlot.store(strip.slot, std::memory_order_release);
+        const auto trackType = EuconTrackType(strip.role);
+        if (track->cache.trackType != trackType)
+        {
+            track->channel->SetTrackMetadata(trackType,
+                strip.sortGroup == 0 ? L"Output" : strip.sortGroup == 1 ? L"Input" : L"Audio");
+            track->cache.trackType = trackType;
+        }
         if (track->route->channelOrder.exchange(order) != order)
         {
             track->channel->SetOrder(order);
@@ -408,10 +447,22 @@ int EuconHost::ApplyAudioFrame(const AudioFrame& frame)
         auto& cache = track->cache;
         const auto order = track->route->channelOrder.load();
         ++activeCount;
+        const auto trackType = EuconTrackType(strip.role);
+        if (!cache.active || cache.trackType != trackType)
+        {
+            channel.SetTrackMetadata(trackType,
+                strip.sortGroup == 0 ? L"Output" : strip.sortGroup == 1 ? L"Input" : L"Audio");
+            cache.trackType = trackType;
+        }
         if (!cache.active || fullRefresh || cache.name != strip.name)
         {
             channel.SetName(strip.name);
             cache.name = strip.name;
+        }
+        if (!cache.active || fullRefresh || cache.isDefault != strip.isDefault)
+        {
+            channel.SetRecordArmed(strip.isDefault);
+            cache.isDefault = strip.isDefault;
         }
 
         const auto volumeMatchesPending = cache.volumePending &&
@@ -542,6 +593,13 @@ bool EuconHost::HandleSurfaceChange(const SurfaceChange& change)
         {
             cache.mutePending = false;
         }
+        return change.commandQueued;
+    }
+    if (kind == 3)
+    {
+        // Record Arm is used as a one-of-N default-endpoint selector. A press
+        // on the already-selected device is not an "unset default" command;
+        // the next Core Audio frame restores the authoritative switch/LED.
         return change.commandQueued;
     }
     return false;

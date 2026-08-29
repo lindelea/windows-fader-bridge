@@ -1,9 +1,11 @@
 #include "NativeAudioController.h"
+#include "DiagnosticLog.h"
 
 #include <Audioclient.h>
 #include <Audiopolicy.h>
 #include <Endpointvolume.h>
 #include <Mmdeviceapi.h>
+#include <Propsys.h>
 #include <ShObjIdl.h>
 #include <Shlwapi.h>
 #include <appmodel.h>
@@ -28,6 +30,103 @@ namespace
 constexpr auto kMeterPeriod = std::chrono::milliseconds(30);
 constexpr auto kDiscoveryPeriod = std::chrono::milliseconds(500);
 constexpr auto kSlotRetention = std::chrono::seconds(5);
+const PROPERTYKEY kDeviceFriendlyName =
+{ { 0xa45c254e, 0xdf1c, 0x4efd, { 0x80, 0x20, 0x67, 0xd1, 0x46, 0xa8, 0x50, 0xe0 } }, 14 };
+
+// Windows exposes endpoint enumeration/volume publicly, but still provides no
+// public desktop API for changing the system default endpoint. PolicyConfig is
+// the compatibility boundary used by established Windows audio utilities. It
+// is isolated here so the EUCON model remains independent of this Windows ABI.
+struct DeviceShareMode
+{
+    DWORD mode;
+    BOOL unknown;
+};
+
+MIDL_INTERFACE("f8679f50-850a-41cf-9c72-430f290290c8")
+IPolicyConfig : public IUnknown
+{
+    virtual HRESULT STDMETHODCALLTYPE GetMixFormat(LPCWSTR, WAVEFORMATEX**) = 0;
+    virtual HRESULT STDMETHODCALLTYPE GetDeviceFormat(LPCWSTR, INT, WAVEFORMATEX**) = 0;
+    virtual HRESULT STDMETHODCALLTYPE ResetDeviceFormat(LPCWSTR) = 0;
+    virtual HRESULT STDMETHODCALLTYPE SetDeviceFormat(LPCWSTR, WAVEFORMATEX*, WAVEFORMATEX*) = 0;
+    virtual HRESULT STDMETHODCALLTYPE GetProcessingPeriod(LPCWSTR, INT, INT64*, INT64*) = 0;
+    virtual HRESULT STDMETHODCALLTYPE SetProcessingPeriod(LPCWSTR, INT64*) = 0;
+    virtual HRESULT STDMETHODCALLTYPE GetShareMode(LPCWSTR, DeviceShareMode*) = 0;
+    virtual HRESULT STDMETHODCALLTYPE SetShareMode(LPCWSTR, DeviceShareMode*) = 0;
+    virtual HRESULT STDMETHODCALLTYPE GetPropertyValue(LPCWSTR, const PROPERTYKEY&, PROPVARIANT*) = 0;
+    virtual HRESULT STDMETHODCALLTYPE SetPropertyValue(LPCWSTR, const PROPERTYKEY&, PROPVARIANT*) = 0;
+    virtual HRESULT STDMETHODCALLTYPE SetDefaultEndpoint(LPCWSTR, ERole) = 0;
+    virtual HRESULT STDMETHODCALLTYPE SetEndpointVisibility(LPCWSTR, INT) = 0;
+};
+
+const CLSID CLSID_PolicyConfigClient =
+{ 0x870af99c, 0x171d, 0x4f9e, { 0xaf, 0x0d, 0xe6, 0x3d, 0xf4, 0x0d, 0x2b, 0xc9 } };
+
+enum class SlotKind
+{
+    Empty,
+    Application,
+    RenderEndpoint,
+    CaptureEndpoint,
+};
+
+class EndpointNotifications final : public IMMNotificationClient
+{
+public:
+    EndpointNotifications(HANDLE wakeEvent, std::atomic_bool* changePending,
+        std::atomic_bool* discoveryPending)
+        : wakeEvent_(wakeEvent), changePending_(changePending),
+          discoveryPending_(discoveryPending)
+    {
+    }
+
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** object) override
+    {
+        if (!object) return E_POINTER;
+        *object = nullptr;
+        if (iid == __uuidof(IUnknown) || iid == __uuidof(IMMNotificationClient))
+        {
+            *object = static_cast<IMMNotificationClient*>(this);
+            AddRef();
+            return S_OK;
+        }
+        return E_NOINTERFACE;
+    }
+    ULONG STDMETHODCALLTYPE AddRef() override
+    {
+        return references_.fetch_add(1U, std::memory_order_relaxed) + 1U;
+    }
+    ULONG STDMETHODCALLTYPE Release() override
+    {
+        const auto remaining = references_.fetch_sub(1U, std::memory_order_acq_rel) - 1U;
+        if (remaining == 0U) delete this;
+        return remaining;
+    }
+    HRESULT STDMETHODCALLTYPE OnDeviceStateChanged(LPCWSTR, DWORD) override { Signal(); return S_OK; }
+    HRESULT STDMETHODCALLTYPE OnDeviceAdded(LPCWSTR) override { Signal(); return S_OK; }
+    HRESULT STDMETHODCALLTYPE OnDeviceRemoved(LPCWSTR) override { Signal(); return S_OK; }
+    HRESULT STDMETHODCALLTYPE OnDefaultDeviceChanged(EDataFlow, ERole, LPCWSTR) override
+    {
+        Signal(); return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE OnPropertyValueChanged(LPCWSTR, const PROPERTYKEY) override
+    {
+        Signal(); return S_OK;
+    }
+
+private:
+    void Signal() const
+    {
+        discoveryPending_->store(true, std::memory_order_release);
+        changePending_->store(true, std::memory_order_release);
+        SetEvent(wakeEvent_);
+    }
+    std::atomic<ULONG> references_ = 1U;
+    HANDLE wakeEvent_ = nullptr;
+    std::atomic_bool* changePending_ = nullptr;
+    std::atomic_bool* discoveryPending_ = nullptr;
+};
 
 class SessionEvents final : public IAudioSessionEvents
 {
@@ -636,10 +735,16 @@ struct NativeAudioController::Impl
 
     struct Slot
     {
+        SlotKind kind = SlotKind::Empty;
         std::wstring key;
         std::wstring name;
+        std::wstring endpointId;
         std::uint32_t channelColor = AudioStripState::NoChannelColor;
         std::vector<Session> sessions;
+        ComPtr<IMMDevice> endpointDevice;
+        ComPtr<IAudioEndpointVolume> endpointVolume;
+        ComPtr<IAudioMeterInformation> endpointMeter;
+        bool isDefault = false;
         std::wstring preferredVolumeSession;
         std::wstring preferredMuteSession;
         std::chrono::steady_clock::time_point lastSeen{};
@@ -648,9 +753,13 @@ struct NativeAudioController::Impl
     ComPtr<IMMDeviceEnumerator> enumerator;
     ComPtr<IMMDevice> endpoint;
     ComPtr<IAudioSessionManager2> manager;
+    ComPtr<IMMNotificationClient> endpointNotifications;
+    std::wstring sessionEndpointId;
+    std::wstring endpointDiagnosticSignature;
     std::array<Slot, StripCount> slots;
     std::array<unsigned long long, StripCount> appliedVolumeVersions{};
     std::array<unsigned long long, StripCount> appliedMuteVersions{};
+    unsigned long long appliedDefaultVersion = 0;
     HANDLE wakeEvent = nullptr;
     std::atomic_bool* changePending = nullptr;
     std::atomic_bool* discoveryPending = nullptr;
@@ -660,6 +769,10 @@ struct NativeAudioController::Impl
         for (auto& slot : slots)
         {
             UnregisterSessions(slot.sessions);
+        }
+        if (enumerator && endpointNotifications)
+        {
+            enumerator->UnregisterEndpointNotificationCallback(endpointNotifications.Get());
         }
     }
 
@@ -697,12 +810,53 @@ struct NativeAudioController::Impl
         {
             return false;
         }
-        if (FAILED(enumerator->GetDefaultAudioEndpoint(eRender, eMultimedia, &endpoint)))
+        endpointNotifications.Attach(new EndpointNotifications(
+            wakeEvent, changePending, discoveryPending));
+        if (FAILED(enumerator->RegisterEndpointNotificationCallback(endpointNotifications.Get())))
         {
             return false;
         }
-        return SUCCEEDED(endpoint->Activate(__uuidof(IAudioSessionManager2), CLSCTX_ALL,
-            nullptr, reinterpret_cast<void**>(manager.GetAddressOf())));
+        return EnsureDefaultRenderManager();
+    }
+
+    bool EnsureDefaultRenderManager()
+    {
+        ComPtr<IMMDevice> current;
+        if (!enumerator || FAILED(enumerator->GetDefaultAudioEndpoint(eRender, eConsole, &current)))
+        {
+            return false;
+        }
+        LPWSTR rawId = nullptr;
+        if (FAILED(current->GetId(&rawId)) || !rawId)
+        {
+            return false;
+        }
+        const std::wstring currentId(rawId);
+        CoTaskMemFree(rawId);
+        if (manager && currentId == sessionEndpointId)
+        {
+            return true;
+        }
+
+        for (auto& slot : slots)
+        {
+            if (slot.kind == SlotKind::Application)
+            {
+                UnregisterSessions(slot.sessions);
+                slot.sessions.clear();
+            }
+        }
+        manager.Reset();
+        endpoint.Reset();
+        if (FAILED(current->Activate(__uuidof(IAudioSessionManager2), CLSCTX_ALL,
+            nullptr, reinterpret_cast<void**>(manager.GetAddressOf()))))
+        {
+            sessionEndpointId.clear();
+            return false;
+        }
+        endpoint = std::move(current);
+        sessionEndpointId = currentId;
+        return true;
     }
 
     bool RefreshApplications()
@@ -789,6 +943,10 @@ struct NativeAudioController::Impl
         const auto now = std::chrono::steady_clock::now();
         for (auto& slot : slots)
         {
+            if (slot.kind != SlotKind::Application)
+            {
+                continue;
+            }
             const auto found = applications.find(slot.key);
             if (found != applications.end())
             {
@@ -840,11 +998,12 @@ struct NativeAudioController::Impl
         for (auto& [key, application] : applications)
         {
             const auto empty = std::find_if(slots.begin(), slots.end(),
-                [](const Slot& slot) { return slot.key.empty(); });
+                [](const Slot& slot) { return slot.kind == SlotKind::Empty; });
             if (empty == slots.end())
             {
                 break;
             }
+            empty->kind = SlotKind::Application;
             empty->key = key;
             empty->name = application.name;
             empty->channelColor = application.channelColor;
@@ -858,14 +1017,211 @@ struct NativeAudioController::Impl
         return true;
     }
 
-    bool ApplyVolume(const int slotIndex, const float value)
+    bool RefreshEndpoints()
     {
-        if (slotIndex < 0 || slotIndex >= StripCount || slots[slotIndex].sessions.empty())
+        struct EndpointDescription
+        {
+            SlotKind kind = SlotKind::Empty;
+            std::wstring id;
+            std::wstring name;
+            bool isDefault = false;
+            ComPtr<IMMDevice> device;
+            ComPtr<IAudioEndpointVolume> volume;
+            ComPtr<IAudioMeterInformation> meter;
+        };
+
+        const auto defaultId = [this](const EDataFlow flow)
+        {
+            std::wstring result;
+            ComPtr<IMMDevice> device;
+            LPWSTR raw = nullptr;
+            if (enumerator && SUCCEEDED(enumerator->GetDefaultAudioEndpoint(flow, eConsole, &device)) &&
+                device && SUCCEEDED(device->GetId(&raw)) && raw)
+            {
+                result = raw;
+                CoTaskMemFree(raw);
+            }
+            return result;
+        };
+        const auto defaultRender = defaultId(eRender);
+        const auto defaultCapture = defaultId(eCapture);
+
+        ComPtr<IMMDeviceCollection> collection;
+        if (!enumerator || FAILED(enumerator->EnumAudioEndpoints(eAll, DEVICE_STATE_ACTIVE,
+            &collection)))
         {
             return false;
         }
+        UINT count = 0;
+        if (FAILED(collection->GetCount(&count)))
+        {
+            return false;
+        }
+        std::map<std::wstring, EndpointDescription> available;
+        for (UINT index = 0; index < count; ++index)
+        {
+            ComPtr<IMMDevice> device;
+            if (FAILED(collection->Item(index, &device))) continue;
+            LPWSTR rawId = nullptr;
+            if (FAILED(device->GetId(&rawId)) || !rawId) continue;
+            std::wstring id(rawId);
+            CoTaskMemFree(rawId);
+
+            ComPtr<IMMEndpoint> endpointInfo;
+            EDataFlow flow = eAll;
+            if (FAILED(device.As(&endpointInfo)) || FAILED(endpointInfo->GetDataFlow(&flow)))
+            {
+                continue;
+            }
+            ComPtr<IPropertyStore> properties;
+            PROPVARIANT friendly;
+            PropVariantInit(&friendly);
+            std::wstring name = L"Windows audio device";
+            if (SUCCEEDED(device->OpenPropertyStore(STGM_READ, &properties)) && properties &&
+                SUCCEEDED(properties->GetValue(kDeviceFriendlyName, &friendly)) &&
+                friendly.vt == VT_LPWSTR && friendly.pwszVal)
+            {
+                name = friendly.pwszVal;
+            }
+            PropVariantClear(&friendly);
+
+            ComPtr<IAudioEndpointVolume> volume;
+            if (FAILED(device->Activate(__uuidof(IAudioEndpointVolume), CLSCTX_ALL, nullptr,
+                reinterpret_cast<void**>(volume.GetAddressOf()))))
+            {
+                continue;
+            }
+            ComPtr<IAudioMeterInformation> meter;
+            device->Activate(__uuidof(IAudioMeterInformation), CLSCTX_ALL, nullptr,
+                reinterpret_cast<void**>(meter.GetAddressOf()));
+
+            EndpointDescription description;
+            description.kind = flow == eRender ? SlotKind::RenderEndpoint :
+                SlotKind::CaptureEndpoint;
+            description.id = id;
+            description.name = std::move(name);
+            description.isDefault = flow == eRender ? id == defaultRender : id == defaultCapture;
+            description.device = std::move(device);
+            description.volume = std::move(volume);
+            description.meter = std::move(meter);
+            available.emplace(id, std::move(description));
+        }
+
+        for (auto& slot : slots)
+        {
+            if (slot.kind != SlotKind::RenderEndpoint && slot.kind != SlotKind::CaptureEndpoint)
+            {
+                continue;
+            }
+            const auto found = available.find(slot.endpointId);
+            if (found == available.end())
+            {
+                slot = Slot{};
+                continue;
+            }
+            auto& source = found->second;
+            slot.kind = source.kind;
+            slot.name = source.name;
+            slot.isDefault = source.isDefault;
+            // Preserve the established endpoint interfaces across polling
+            // passes. Re-activating them every 500 ms creates avoidable COM
+            // churn and can interrupt a fast surface gesture.
+            available.erase(found);
+        }
+
+        for (auto& [id, source] : available)
+        {
+            const auto empty = std::find_if(slots.begin(), slots.end(),
+                [](const Slot& slot) { return slot.kind == SlotKind::Empty; });
+            if (empty == slots.end()) break;
+            empty->kind = source.kind;
+            empty->endpointId = id;
+            empty->key = (source.kind == SlotKind::RenderEndpoint ? L"ENDPOINT:RENDER:" :
+                L"ENDPOINT:CAPTURE:") + id;
+            empty->name = std::move(source.name);
+            empty->channelColor = source.kind == SlotKind::RenderEndpoint
+                ? 0x003E9BFFU : 0x0034C98FU;
+            empty->isDefault = source.isDefault;
+            empty->endpointDevice = std::move(source.device);
+            empty->endpointVolume = std::move(source.volume);
+            empty->endpointMeter = std::move(source.meter);
+        }
+        const auto renderCount = std::count_if(slots.begin(), slots.end(), [](const Slot& slot)
+        {
+            return slot.kind == SlotKind::RenderEndpoint;
+        });
+        const auto captureCount = std::count_if(slots.begin(), slots.end(), [](const Slot& slot)
+        {
+            return slot.kind == SlotKind::CaptureEndpoint;
+        });
+        const auto signature = defaultRender + L"|" + defaultCapture + L"|" +
+            std::to_wstring(renderCount) + L"|" + std::to_wstring(captureCount);
+        if (signature != endpointDiagnosticSignature)
+        {
+            endpointDiagnosticSignature = signature;
+            FB_TRACE("ENDPOINT_REFRESH render=%u capture=%u",
+                static_cast<unsigned>(renderCount), static_cast<unsigned>(captureCount));
+        }
+        return true;
+    }
+
+    bool ApplyDefaultEndpoint(const int slotIndex)
+    {
+        if (slotIndex < 0 || slotIndex >= StripCount)
+        {
+            return false;
+        }
+        const auto& slot = slots[slotIndex];
+        if ((slot.kind != SlotKind::RenderEndpoint && slot.kind != SlotKind::CaptureEndpoint) ||
+            slot.endpointId.empty())
+        {
+            return false;
+        }
+        ComPtr<IPolicyConfig> policy;
+        if (FAILED(CoCreateInstance(CLSID_PolicyConfigClient, nullptr, CLSCTX_ALL,
+            __uuidof(IPolicyConfig), reinterpret_cast<void**>(policy.GetAddressOf()))))
+        {
+            return false;
+        }
+        // Set every Windows role so the selected endpoint behaves consistently
+        // in the modern Settings UI and in desktop applications.
+        const auto console = policy->SetDefaultEndpoint(slot.endpointId.c_str(), eConsole);
+        const auto multimedia = policy->SetDefaultEndpoint(slot.endpointId.c_str(), eMultimedia);
+        const auto communications = policy->SetDefaultEndpoint(
+            slot.endpointId.c_str(), eCommunications);
+        const auto changed = SUCCEEDED(console) && SUCCEEDED(multimedia) &&
+            SUCCEEDED(communications);
+        FB_TRACE("DEFAULT_ENDPOINT slot=%d flow=%s console=%08X multimedia=%08X communications=%08X changed=%d",
+            slotIndex, slot.kind == SlotKind::RenderEndpoint ? "render" : "capture",
+            static_cast<unsigned>(console), static_cast<unsigned>(multimedia),
+            static_cast<unsigned>(communications), changed ? 1 : 0);
+        if (changed)
+        {
+            RefreshEndpoints();
+            if (slot.kind == SlotKind::RenderEndpoint)
+            {
+                EnsureDefaultRenderManager();
+                RefreshApplications();
+            }
+        }
+        return changed;
+    }
+
+    bool ApplyVolume(const int slotIndex, const float value)
+    {
+        if (slotIndex < 0 || slotIndex >= StripCount)
+        {
+            return false;
+        }
+        auto& slot = slots[slotIndex];
+        if (slot.endpointVolume)
+        {
+            return SUCCEEDED(slot.endpointVolume->SetMasterVolumeLevelScalar(
+                std::clamp(value, 0.0F, 1.0F), nullptr));
+        }
+        if (slot.sessions.empty()) return false;
         bool changed = false;
-        for (const auto& session : slots[slotIndex].sessions)
+        for (const auto& session : slot.sessions)
         {
             changed = SUCCEEDED(session.volume->SetMasterVolume(
                 std::clamp(value, 0.0F, 1.0F), nullptr)) || changed;
@@ -875,12 +1231,18 @@ struct NativeAudioController::Impl
 
     bool ApplyMute(const int slotIndex, const bool muted)
     {
-        if (slotIndex < 0 || slotIndex >= StripCount || slots[slotIndex].sessions.empty())
+        if (slotIndex < 0 || slotIndex >= StripCount)
         {
             return false;
         }
+        auto& slot = slots[slotIndex];
+        if (slot.endpointVolume)
+        {
+            return SUCCEEDED(slot.endpointVolume->SetMute(muted, nullptr));
+        }
+        if (slot.sessions.empty()) return false;
         bool changed = false;
-        for (const auto& session : slots[slotIndex].sessions)
+        for (const auto& session : slot.sessions)
         {
             changed = SUCCEEDED(session.volume->SetMute(muted, nullptr)) || changed;
         }
@@ -896,13 +1258,47 @@ struct NativeAudioController::Impl
             auto& slot = slots[index];
             AudioStripState strip;
             strip.slot = index;
-            strip.active = !slot.sessions.empty();
+            const auto endpointSlot = slot.kind == SlotKind::RenderEndpoint ||
+                slot.kind == SlotKind::CaptureEndpoint;
+            strip.active = endpointSlot ? slot.endpointVolume != nullptr : !slot.sessions.empty();
             strip.key = strip.active ? slot.key : L"";
-            strip.name = strip.active ? slot.name : L"";
+            strip.name = strip.active ? (slot.kind == SlotKind::RenderEndpoint
+                ? (slot.isDefault ? L"Master · " : L"OUT · ") + slot.name
+                : slot.kind == SlotKind::CaptureEndpoint ? L"IN · " + slot.name
+                : slot.name) : L"";
             strip.channelColor = strip.active
                 ? slot.channelColor : AudioStripState::NoChannelColor;
+            strip.defaultSelectable = endpointSlot;
+            strip.isDefault = endpointSlot && slot.isDefault;
+            strip.sortGroup = slot.kind == SlotKind::RenderEndpoint ? 0 :
+                slot.kind == SlotKind::CaptureEndpoint ? 1 : 2;
+            strip.role = slot.kind == SlotKind::RenderEndpoint
+                ? (slot.isDefault ? AudioStripRole::MasterOutput : AudioStripRole::OutputDevice)
+                : slot.kind == SlotKind::CaptureEndpoint ? AudioStripRole::InputDevice
+                : AudioStripRole::Application;
             if (strip.active)
             {
+                if (endpointSlot)
+                {
+                    float volume = 0.0F;
+                    BOOL muted = FALSE;
+                    float peak = 0.0F;
+                    if (SUCCEEDED(slot.endpointVolume->GetMasterVolumeLevelScalar(&volume)))
+                    {
+                        strip.volume = volume;
+                    }
+                    if (SUCCEEDED(slot.endpointVolume->GetMute(&muted)))
+                    {
+                        strip.muted = muted != FALSE;
+                    }
+                    if (slot.endpointMeter)
+                    {
+                        slot.endpointMeter->GetPeakValue(&peak);
+                    }
+                    strip.peakDb = PeakToDb(peak);
+                    frame->strips.push_back(std::move(strip));
+                    continue;
+                }
                 struct Observation
                 {
                     Session* session = nullptr;
@@ -1113,6 +1509,18 @@ bool NativeAudioController::QueueMute(const int slot, const bool muted) noexcept
     return true;
 }
 
+bool NativeAudioController::QueueSetDefault(const int slot) noexcept
+{
+    if (!running_ || slot < 0 || slot >= StripCount)
+    {
+        return false;
+    }
+    pendingDefaultSlot_.store(slot, std::memory_order_release);
+    defaultVersion_.fetch_add(1, std::memory_order_acq_rel);
+    SetEvent(wakeEvent_);
+    return true;
+}
+
 void NativeAudioController::Run()
 {
     if (FAILED(CoInitializeEx(nullptr, COINIT_MULTITHREADED)))
@@ -1137,6 +1545,7 @@ void NativeAudioController::Run()
         return;
     }
 
+    impl_->RefreshEndpoints();
     impl_->RefreshApplications();
     ready_ = true;
     auto nextMeter = std::chrono::steady_clock::now();
@@ -1169,11 +1578,25 @@ void NativeAudioController::Run()
             }
         }
 
+        const auto defaultVersion = defaultVersion_.load(std::memory_order_acquire);
+        if (defaultVersion != impl_->appliedDefaultVersion)
+        {
+            const auto slot = pendingDefaultSlot_.load(std::memory_order_acquire);
+            const auto changed = impl_->ApplyDefaultEndpoint(slot);
+            impl_->appliedDefaultVersion = defaultVersion;
+            if (changed)
+            {
+                sessionChangePending_.store(true, std::memory_order_release);
+            }
+        }
+
         const auto afterCommands = std::chrono::steady_clock::now();
         const auto discoveryEvent = sessionDiscoveryPending_.exchange(false,
             std::memory_order_acq_rel);
         if (discoveryEvent || afterCommands >= nextDiscovery)
         {
+            impl_->RefreshEndpoints();
+            impl_->EnsureDefaultRenderManager();
             impl_->RefreshApplications();
             nextDiscovery = afterCommands + kDiscoveryPeriod;
         }
