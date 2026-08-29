@@ -956,9 +956,12 @@ struct NativeAudioController::Impl
         float lastObservedVolume = 0.0F;
         bool muteObserved = false;
         bool lastObservedMute = false;
+        bool panObserved = false;
+        float lastObservedPan = 0.0F;
         std::wstring identifier;
         ComPtr<IAudioSessionControl> control;
         ComPtr<ISimpleAudioVolume> volume;
+        ComPtr<IChannelAudioVolume> channelVolume;
         ComPtr<IAudioMeterInformation> meter;
         ComPtr<IAudioSessionEvents> events;
     };
@@ -1005,6 +1008,7 @@ struct NativeAudioController::Impl
     std::wstring endpointDiagnosticSignature;
     std::array<Slot, StripCount> slots;
     std::array<unsigned long long, StripCount> appliedVolumeVersions{};
+    std::array<unsigned long long, StripCount> appliedPanVersions{};
     std::array<unsigned long long, StripCount> appliedMuteVersions{};
     unsigned long long appliedDefaultVersion = 0;
     unsigned long long appliedMonoToggleVersion = 0;
@@ -1257,12 +1261,14 @@ struct NativeAudioController::Impl
             const auto key = StableKey(process.name);
 
             ComPtr<ISimpleAudioVolume> volume;
+            ComPtr<IChannelAudioVolume> channelVolume;
             ComPtr<IAudioMeterInformation> meter;
             if (FAILED(control.As(&volume)))
             {
                 continue;
             }
             control.As(&meter);
+            control.As(&channelVolume);
 
             LPWSTR sessionIdentifier = nullptr;
             std::wstring identifier;
@@ -1294,10 +1300,15 @@ struct NativeAudioController::Impl
             {
                 app.channelColor = process.channelColor;
             }
-            app.sessions.push_back({ processId, persistentAppIdentity,
-                false, 0.0F, false, false,
-                std::move(identifier),
-                std::move(control), std::move(volume), std::move(meter), nullptr });
+            Session session;
+            session.processId = processId;
+            session.persistentAppIdentity = persistentAppIdentity;
+            session.identifier = std::move(identifier);
+            session.control = std::move(control);
+            session.volume = std::move(volume);
+            session.channelVolume = std::move(channelVolume);
+            session.meter = std::move(meter);
+            app.sessions.push_back(std::move(session));
         }
 
         const auto now = std::chrono::steady_clock::now();
@@ -1607,6 +1618,43 @@ struct NativeAudioController::Impl
         return changed;
     }
 
+    bool ApplyPan(const int slotIndex, const float value)
+    {
+        if (slotIndex < 0 || slotIndex >= StripCount)
+        {
+            return false;
+        }
+        auto& slot = slots[slotIndex];
+        if (slot.kind != SlotKind::Application || slot.sessions.empty())
+        {
+            return false;
+        }
+
+        const auto pan = std::clamp(value, -1.0F, 1.0F);
+        // Balance law: center is 1/1, so moving through center never imposes
+        // an equal-power -3 dB attenuation. The opposite channel alone is
+        // attenuated as the control moves toward either edge.
+        const auto left = pan <= 0.0F ? 1.0F : 1.0F - pan;
+        const auto right = pan >= 0.0F ? 1.0F : 1.0F + pan;
+        bool changed = false;
+        for (const auto& session : slot.sessions)
+        {
+            UINT32 channelCount = 0U;
+            if (!session.channelVolume ||
+                FAILED(session.channelVolume->GetChannelCount(&channelCount)) ||
+                channelCount != 2U)
+            {
+                continue;
+            }
+            const auto leftResult = session.channelVolume->SetChannelVolume(0U, left, nullptr);
+            const auto rightResult = session.channelVolume->SetChannelVolume(1U, right, nullptr);
+            changed = (SUCCEEDED(leftResult) && SUCCEEDED(rightResult)) || changed;
+        }
+        FB_TRACE("PAN_WRITE slot=%d pan=%.4f left=%.4f right=%.4f changed=%d",
+            slotIndex, pan, left, right, changed ? 1 : 0);
+        return changed;
+    }
+
     bool ApplyMute(const int slotIndex, const bool muted)
     {
         if (slotIndex < 0 || slotIndex >= StripCount)
@@ -1857,6 +1905,8 @@ struct NativeAudioController::Impl
                     float volume = 0.0F;
                     bool volumeValid = false;
                     bool muted = false;
+                    bool panValid = false;
+                    float pan = 0.0F;
                 };
 
                 std::vector<Observation> observations;
@@ -1901,6 +1951,34 @@ struct NativeAudioController::Impl
                         }
                         session.lastObservedMute = observation.muted;
                         session.muteObserved = true;
+                    }
+                    UINT32 channelCount = 0U;
+                    if (session.channelVolume &&
+                        SUCCEEDED(session.channelVolume->GetChannelCount(&channelCount)) &&
+                        channelCount == 2U)
+                    {
+                        float left = 1.0F;
+                        float right = 1.0F;
+                        if (SUCCEEDED(session.channelVolume->GetChannelVolume(0U, &left)) &&
+                            SUCCEEDED(session.channelVolume->GetChannelVolume(1U, &right)))
+                        {
+                            observation.panValid = true;
+                            const auto maximum = std::max(left, right);
+                            if (maximum <= 0.0001F || std::fabs(left - right) <= 0.0005F)
+                            {
+                                observation.pan = 0.0F;
+                            }
+                            else if (left > right)
+                            {
+                                observation.pan = -(1.0F - right / maximum);
+                            }
+                            else
+                            {
+                                observation.pan = 1.0F - left / maximum;
+                            }
+                            session.lastObservedPan = observation.pan;
+                            session.panObserved = true;
+                        }
                     }
                     MergeMeterPeaks(session.meter.Get(), peaks);
                     observations.push_back(observation);
@@ -1953,6 +2031,11 @@ struct NativeAudioController::Impl
                     if (selected->volumeValid)
                     {
                         strip.volume = selected->volume;
+                    }
+                    if (selected->panValid)
+                    {
+                        strip.panAvailable = true;
+                        strip.pan = selected->pan;
                     }
                 }
 
@@ -2049,6 +2132,18 @@ bool NativeAudioController::QueueVolume(const int slot, const float volume) noex
     }
     pendingVolumes_[slot].store(std::clamp(volume, 0.0F, 1.0F), std::memory_order_release);
     volumeVersions_[slot].fetch_add(1, std::memory_order_acq_rel);
+    SetEvent(wakeEvent_);
+    return true;
+}
+
+bool NativeAudioController::QueuePan(const int slot, const float pan) noexcept
+{
+    if (!running_ || slot < 0 || slot >= StripCount)
+    {
+        return false;
+    }
+    pendingPans_[slot].store(std::clamp(pan, -1.0F, 1.0F), std::memory_order_release);
+    panVersions_[slot].fetch_add(1, std::memory_order_acq_rel);
     SetEvent(wakeEvent_);
     return true;
 }
@@ -2173,6 +2268,13 @@ void NativeAudioController::Run()
                 impl_->ApplyVolume(slot, pendingVolumes_[slot].load(std::memory_order_acquire)))
             {
                 impl_->appliedVolumeVersions[slot] = volumeVersion;
+            }
+
+            const auto panVersion = panVersions_[slot].load(std::memory_order_acquire);
+            if (panVersion != impl_->appliedPanVersions[slot] &&
+                impl_->ApplyPan(slot, pendingPans_[slot].load(std::memory_order_acquire)))
+            {
+                impl_->appliedPanVersions[slot] = panVersion;
             }
 
             const auto muteVersion = muteVersions_[slot].load(std::memory_order_acquire);

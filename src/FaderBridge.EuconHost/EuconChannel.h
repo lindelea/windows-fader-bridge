@@ -26,7 +26,9 @@ public:
     EuconChannel(int channelOrder, NEuCon::int32 channelColor,
                  const std::wstring& persistenceId,
                  const std::wstring& displayName, ChangeHandler faderHandler,
-                 ChangeHandler knobHandler, ChangeHandler muteHandler,
+                 ChangeHandler knobHandler, ChangeHandler panHandler,
+                 ChangeHandler panResetHandler,
+                 ChangeHandler muteHandler,
                  ChangeHandler soloHandler = {}, ChangeHandler selectHandler = {},
                  ChangeHandler recordArmHandler = {},
                  NEuCon::int32 trackType = 0,
@@ -35,6 +37,7 @@ public:
 
     void SetFaderNormalized(float value);
     void SetKnobNormalized(float value);
+    void SetPan(float value);
     void SetName(const std::wstring& value);
     void SetOrder(int channelOrder);
     void ApplyPendingFaderRebound();
@@ -63,6 +66,7 @@ private:
         NumberId,
         MeterId,
         KnobSetId,
+        PanKnobSetId,
         SoloId,
         SelectId,
         RecordArmId,
@@ -73,6 +77,7 @@ private:
         NEuCon::int32 layoutName, const std::wstring& text);
     void InitializeMeter();
     void InitializeKnob();
+    void InitializePan();
     void InitializeSolo();
     void InitializeSelect();
     void InitializeRecordArm();
@@ -80,6 +85,8 @@ private:
     std::atomic<int> channelOrder_;
     ChangeHandler faderHandler_;
     ChangeHandler knobHandler_;
+    ChangeHandler panHandler_;
+    ChangeHandler panResetHandler_;
     ChangeHandler muteHandler_;
     ChangeHandler soloHandler_;
     ChangeHandler selectHandler_;
@@ -91,10 +98,13 @@ private:
     EuControlMultiMeter meter_;
     EuControlKnobCellArray knobSet_;
     EuControlKnobCell knob_;
+    EuControlKnobCellArray panKnobSet_;
+    EuControlKnobCell panKnob_;
     std::unique_ptr<EuControlSwitch> solo_;
     std::unique_ptr<EuControlSwitch> select_;
     std::unique_ptr<EuControlSwitch> recordArm_;
     NEuCon::uint32 knobMemberId_ = 0;
+    NEuCon::uint32 panKnobMemberId_ = 0;
     std::atomic_bool faderReboundPending_ = false;
     std::atomic_bool faderTouched_ = false;
     std::atomic<unsigned long long> faderTouchReleaseDeadline_ = 0;

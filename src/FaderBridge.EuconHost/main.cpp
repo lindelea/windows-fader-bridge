@@ -37,6 +37,8 @@ const wchar_t* ChangeKindName(const int kind)
     case 4: return L"Solo";
     case 5: return L"Select";
     case 6: return L"Attention";
+    case 7: return L"Pan";
+    case 8: return L"Pan center";
     default: return L"Unknown";
     }
 }
@@ -77,6 +79,13 @@ void PaintWindow(const HWND window)
              << std::left << std::setw(30) << strip.name.substr(0, 29) << std::right
              << std::setw(4) << (strip.volume * 100.0F) << L"%  "
              << (strip.muted ? L"MUTE" : L"    ");
+        if (strip.panAvailable)
+        {
+            const auto panPercent = static_cast<int>(std::lround(std::fabs(strip.pan) * 100.0F));
+            text << L"  PAN " << (strip.pan < -0.005F ? L"L" :
+                strip.pan > 0.005F ? L"R" : L"C") << std::setw(3) <<
+                (panPercent == 0 ? 0 : panPercent);
+        }
         if (strip.defaultSelectable)
         {
             text << (strip.isDefault ? L"  REC/default" : L"  REC/select");
@@ -97,6 +106,10 @@ void PaintWindow(const HWND window)
         if (g_lastKind >= 2 && g_lastKind <= 6)
         {
             text << (g_lastRawTableValue == 0.0F ? L"Off" : L"On");
+        }
+        else if (g_lastKind == 7 || g_lastKind == 8)
+        {
+            text << static_cast<int>(std::lround(g_lastRawTableValue)) << L"%";
         }
         else
         {

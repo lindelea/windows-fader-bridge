@@ -22,9 +22,12 @@ namespace
 {
 constexpr float kVolumeDifference = 0.001F;
 constexpr float kPendingMatch = 0.005F;
+constexpr float kPanDifference = 0.005F;
+constexpr float kPanPendingMatch = 0.015F;
 constexpr int kUnityFaderIndex = 728;
 constexpr UINT kMotorBurstMergeMs = 10U;
 constexpr auto kVolumeHold = std::chrono::milliseconds(180);
+constexpr auto kPanHold = std::chrono::milliseconds(120);
 constexpr auto kMuteHold = std::chrono::milliseconds(120);
 
 unsigned long long ApplicationIdentityHash(const std::wstring& key)
@@ -442,6 +445,7 @@ std::unique_ptr<EuconHost::TrackState> EuconHost::CreateTrack(const int channelO
             commandQueued = kind == 2 ? audioController_->QueueMute(audioSlot, value != 0.0F)
                 : kind == 3 ? audioController_->QueueSetDefault(audioSlot)
                 : kind == 4 ? false
+                : kind == 7 || kind == 8 ? audioController_->QueuePan(audioSlot, value)
                 : audioController_->QueueVolume(audioSlot, value);
         }
         FB_TRACE("SURFACE_QUEUE track=%d slot=%d kind=%d value=%.4f queued=%d",
@@ -468,12 +472,21 @@ std::unique_ptr<EuconHost::TrackState> EuconHost::CreateTrack(const int channelO
     EuconChannel::ChangeHandler recordArmHandler;
     EuconChannel::ChangeHandler soloHandler;
     EuconChannel::ChangeHandler selectHandler;
+    EuconChannel::ChangeHandler panHandler;
+    EuconChannel::ChangeHandler panResetHandler;
     if (strip.role == AudioStripRole::Application)
     {
         soloHandler = [report](const float value, const NEuCon::uint16 rawIndex,
             const float rawValue) { report(value, 4, rawIndex, rawValue); };
         selectHandler = [report](const float value, const NEuCon::uint16 rawIndex,
             const float rawValue) { report(value, 5, rawIndex, rawValue); };
+        if (strip.panAvailable)
+        {
+            panHandler = [report](const float value, const NEuCon::uint16 rawIndex,
+                const float rawValue) { report(value, 7, rawIndex, rawValue); };
+            panResetHandler = [report](const float value, const NEuCon::uint16 rawIndex,
+                const float rawValue) { report(value, 8, rawIndex, rawValue); };
+        }
     }
     if (strip.defaultSelectable)
     {
@@ -486,6 +499,8 @@ std::unique_ptr<EuconHost::TrackState> EuconHost::CreateTrack(const int channelO
             const float rawValue) { report(value, 0, rawIndex, rawValue); },
         [report](const float value, const NEuCon::uint16 rawIndex,
             const float rawValue) { report(value, 1, rawIndex, rawValue); },
+        std::move(panHandler),
+        std::move(panResetHandler),
         [report](const float value, const NEuCon::uint16 rawIndex,
             const float rawValue) { report(value, 2, rawIndex, rawValue); },
         std::move(soloHandler), std::move(selectHandler), std::move(recordArmHandler),
@@ -879,6 +894,26 @@ int EuconHost::ApplyAudioFrame(const AudioFrame& frame)
             cache.volume = strip.volume;
         }
 
+        const auto panMatchesPending = cache.panPending &&
+            std::fabs(strip.pan - cache.requestedPan) <= kPanPendingMatch;
+        if (panMatchesPending || (cache.panPending && now >= cache.panHoldUntil))
+        {
+            cache.panPending = false;
+        }
+        if (strip.panAvailable && !cache.panPending &&
+            (!cache.active || fullRefresh ||
+                std::fabs(strip.pan - cache.pan) > kPanDifference))
+        {
+            FB_TRACE("PAN_FROM_WINDOWS track=%d slot=%d value=%.4f", order,
+                strip.slot, strip.pan);
+            channel.SetPan(strip.pan);
+            cache.pan = strip.pan;
+        }
+        else if (panMatchesPending)
+        {
+            cache.pan = strip.pan;
+        }
+
         channel.WriteMeterDb(meterWriter, strip.meterDb);
         cache.peakDb = strip.peakDb;
 
@@ -968,6 +1003,25 @@ bool EuconHost::HandleSurfaceChange(const SurfaceChange& change)
         if (!change.commandQueued)
         {
             cache.mutePending = false;
+        }
+        return change.commandQueued;
+    }
+    if (kind == 7 || kind == 8)
+    {
+        auto& cache = track->cache;
+        cache.panPending = true;
+        cache.requestedPan = std::clamp(value, -1.0F, 1.0F);
+        cache.pan = cache.requestedPan;
+        cache.panHoldUntil = std::chrono::steady_clock::now() + kPanHold;
+        if (kind == 8)
+        {
+            // The callback only queued the request. EUCON feedback is applied
+            // here on the host thread, then confirmed by the Core Audio frame.
+            track->channel->SetPan(0.0F);
+        }
+        if (!change.commandQueued)
+        {
+            cache.panPending = false;
         }
         return change.commandQueued;
     }

@@ -62,6 +62,7 @@ private:
         bool active = false;
         bool muted = false;
         bool volumePending = false;
+        bool panPending = false;
         int pendingVolumeKind = 0;
         bool mutePending = false;
         bool isDefault = false;
@@ -70,8 +71,10 @@ private:
         bool focusable = false;
         int trackType = 0;
         float volume = 0.0F;
+        float pan = 0.0F;
         float peakDb = -120.0F;
         float requestedVolume = 0.0F;
+        float requestedPan = 0.0F;
         bool requestedMute = false;
         int lastMotorIndex = -1;
         bool motorDispatchPending = false;
@@ -81,6 +84,7 @@ private:
         std::wstring focusExecutablePath;
         std::wstring focusPackageFamilyName;
         std::chrono::steady_clock::time_point volumeHoldUntil{};
+        std::chrono::steady_clock::time_point panHoldUntil{};
         std::chrono::steady_clock::time_point muteHoldUntil{};
     };
 

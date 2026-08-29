@@ -55,7 +55,11 @@ struct AudioStripState
     bool defaultSelectable = false;
     bool isDefault = false;
     bool soloed = false;
+    bool panAvailable = false;
     float volume = 0.0F;
+    // Windows exposes session channel balance rather than a routing panner.
+    // -1 is hard left, 0 is center, and +1 is hard right.
+    float pan = 0.0F;
     float peakDb = -120.0F;
     std::vector<float> meterDb;
     std::vector<AudioMeterRole> meterRoles;
@@ -92,6 +96,7 @@ public:
 
     void Start();
     bool QueueVolume(int slot, float volume) noexcept;
+    bool QueuePan(int slot, float pan) noexcept;
     bool QueueMute(int slot, bool muted) noexcept;
     bool QueueSetDefault(int slot) noexcept;
     bool QueueToggleMonoAudio() noexcept;
@@ -112,6 +117,8 @@ private:
     std::atomic_bool sessionDiscoveryPending_ = false;
     std::array<std::atomic<float>, StripCount> pendingVolumes_{};
     std::array<std::atomic<unsigned long long>, StripCount> volumeVersions_{};
+    std::array<std::atomic<float>, StripCount> pendingPans_{};
+    std::array<std::atomic<unsigned long long>, StripCount> panVersions_{};
     std::array<std::atomic<int>, StripCount> pendingMutes_{};
     std::array<std::atomic<unsigned long long>, StripCount> muteVersions_{};
     std::atomic<int> pendingDefaultSlot_ = -1;

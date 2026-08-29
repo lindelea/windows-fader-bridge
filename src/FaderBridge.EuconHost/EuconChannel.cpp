@@ -62,7 +62,8 @@ tFORMAT TrackFormatForMeterRoles(const std::vector<NEuCon::uint32>& roles)
 EuconChannel::EuconChannel(const int channelOrder, const NEuCon::int32 channelColor,
     const std::wstring& persistenceId,
     const std::wstring& displayName, ChangeHandler faderHandler,
-    ChangeHandler knobHandler, ChangeHandler muteHandler,
+    ChangeHandler knobHandler, ChangeHandler panHandler, ChangeHandler panResetHandler,
+    ChangeHandler muteHandler,
     ChangeHandler soloHandler, ChangeHandler selectHandler,
     ChangeHandler recordArmHandler,
     const NEuCon::int32 trackType,
@@ -70,11 +71,14 @@ EuconChannel::EuconChannel(const int channelOrder, const NEuCon::int32 channelCo
     : channelOrder_(channelOrder),
       faderHandler_(std::move(faderHandler)),
       knobHandler_(std::move(knobHandler)),
+      panHandler_(std::move(panHandler)),
+      panResetHandler_(std::move(panResetHandler)),
       muteHandler_(std::move(muteHandler)),
       soloHandler_(std::move(soloHandler)),
       selectHandler_(std::move(selectHandler)),
       recordArmHandler_(std::move(recordArmHandler)),
-      fader_(this), name_(this), number_(this), meter_(this), knobSet_(this), knob_(this)
+      fader_(this), name_(this), number_(this), meter_(this), knobSet_(this), knob_(this),
+      panKnobSet_(this), panKnob_(this)
 {
     SetAttribute(kATRIBID_ProcessorType, kProcType_ChannelStrip);
     SetAttribute(kATRIBID_LayoutRule0, kRUL_EuLayoutChannel);
@@ -92,6 +96,10 @@ EuconChannel::EuconChannel(const int channelOrder, const NEuCon::int32 channelCo
         std::to_wstring(channelOrder));
     InitializeMeter();
     InitializeKnob();
+    if (panHandler_)
+    {
+        InitializePan();
+    }
     if (soloHandler_)
     {
         InitializeSolo();
@@ -122,6 +130,11 @@ EuconChannel::~EuconChannel()
     {
         RemoveControl(*recordArm_);
         recordArm_.reset();
+    }
+    if (panHandler_)
+    {
+        panKnobSet_.Remove(panKnobMemberId_);
+        RemoveControl(panKnobSet_);
     }
     knobSet_.Remove(knobMemberId_);
     RemoveControl(knobSet_);
@@ -328,6 +341,82 @@ void EuconChannel::InitializeKnob()
         primitive->LoadValueAt(0U, tEuString(L"Vol"), tEuString(L"Volume"), tEuString(L"Session Volume"));
     }
     knobSet_.PushBack(&knob_, knobMemberId_);
+    knobSet_.Thaw();
+}
+
+void EuconChannel::InitializePan()
+{
+    // Getting Started with EUCON section 8 and the current EuLayoutChannel
+    // contract define Pan as a predefined function knob set. Windows Core
+    // Audio exposes stereo session balance rather than a routing panner, so
+    // this is one accurately labelled balance control within that function.
+    panKnobSet_.SetId(PanKnobSetId);
+    panKnobSet_.SetAttribute(kATRIBID_LayoutName0, EuLayoutChannel::kNAM_Pan);
+    panKnobSet_.SetAttribute(kATRIBID_FuncPersID, kChanFuncID_Pan);
+    panKnobSet_.Freeze();
+    AddControl(panKnobSet_);
+
+    EuPrimitiveControl* primitive = nullptr;
+    if (panKnob_.GetPrimitive(EuControlKnobCell::kID_Knob, &primitive) == kERR_OK && primitive)
+    {
+        primitive->Initialize(kTYP_Float, 201U);
+        primitive->LoadValueTableInterpolated(-100.0F, 100.0F);
+        for (int percentage = 100; percentage > 0; --percentage)
+        {
+            const auto index = static_cast<NEuCon::uint16>(100 - percentage);
+            const auto shortText = std::to_wstring(percentage) + L"L";
+            const auto longText = std::to_wstring(percentage) + L"% L";
+            primitive->LoadValueAt(index, shortText, shortText, longText);
+        }
+        primitive->LoadValueAt(100U, tEuString(L"C"), tEuString(L"Center"),
+            tEuString(L"Center"));
+        for (int percentage = 1; percentage <= 100; ++percentage)
+        {
+            const auto index = static_cast<NEuCon::uint16>(100 + percentage);
+            const auto shortText = std::to_wstring(percentage) + L"R";
+            const auto longText = std::to_wstring(percentage) + L"% R";
+            primitive->LoadValueAt(index, shortText, shortText, longText);
+        }
+        if (auto* rotary = dynamic_cast<EuPrimitiveKnob*>(primitive))
+        {
+            rotary->SetPositionRingMode(kRingCenterAnchored);
+        }
+    }
+
+    primitive = nullptr;
+    if (panKnob_.GetPrimitive(EuControlKnobCell::kID_KnobTouchSense, &primitive) == kERR_OK)
+    {
+        if (auto* touch = dynamic_cast<EuPrimitiveSwitch*>(primitive))
+        {
+            touch->Initialize(kTYP_Int, 2U);
+            touch->LoadValueTableInterpolated(0, 1);
+            touch->SetSwitchMode(kSWITCH_Raw);
+        }
+    }
+
+    primitive = nullptr;
+    if (panKnob_.GetPrimitive(EuControlKnobCell::kID_KnobTopSwitch, &primitive) == kERR_OK)
+    {
+        if (auto* topSwitch = dynamic_cast<EuPrimitiveSwitch*>(primitive))
+        {
+            // Getting Started with EUCON 14.7.1 defines knob-top press as the
+            // conventional parameter-default action. Pan's default is Center.
+            topSwitch->Initialize(kTYP_Int, 2U);
+            topSwitch->LoadValueTableInterpolated(0, 1);
+            topSwitch->SetSwitchMode(kSWITCH_Raw);
+        }
+    }
+
+    primitive = nullptr;
+    if (panKnob_.GetPrimitive(EuControlKnobCell::kID_KnobLabelDisplay, &primitive) == kERR_OK &&
+        primitive)
+    {
+        primitive->Initialize(kTYP_IndexedString, 1U);
+        primitive->LoadValueAt(0U, tEuString(L"Pan"), tEuString(L"Balance"),
+            tEuString(L"Windows Session Balance"));
+    }
+    panKnobSet_.PushBack(&panKnob_, panKnobMemberId_);
+    panKnobSet_.Thaw();
 }
 
 void EuconChannel::SetFaderNormalized(const float value)
@@ -357,6 +446,23 @@ void EuconChannel::SetKnobNormalized(const float value)
         const auto index = static_cast<NEuCon::uint16>(std::lround(
             std::clamp(value, 0.0F, 1.0F) * 192.0F));
         FB_TRACE("KNOB_RING_CMD track=%d value=%.4f index=%u", channelOrder_.load(),
+            value, static_cast<unsigned>(index));
+        primitive->SetCurrentIndex(index);
+    }
+}
+
+void EuconChannel::SetPan(const float value)
+{
+    if (!panHandler_)
+    {
+        return;
+    }
+    EuPrimitiveControl* primitive = nullptr;
+    if (panKnob_.GetPrimitive(EuControlKnobCell::kID_Knob, &primitive) == kERR_OK && primitive)
+    {
+        const auto index = static_cast<NEuCon::uint16>(std::lround(
+            (std::clamp(value, -1.0F, 1.0F) + 1.0F) * 100.0F));
+        FB_TRACE("PAN_RING_CMD track=%d value=%.4f index=%u", channelOrder_.load(),
             value, static_cast<unsigned>(index));
         primitive->SetCurrentIndex(index);
     }
@@ -711,5 +817,34 @@ void EuconChannel::OnPrimitiveCallback(const tEVT eventType, NEuCon::uint32,
         affectedPrimitive->GetValueAt(newValueIndex, value);
         FB_TRACE("KNOB_TOUCH track=%d state=%d index=%u", channelOrder_.load(),
             value != 0 ? 1 : 0, static_cast<unsigned>(newValueIndex));
+    }
+    else if (controlId == PanKnobSetId && arrayMemberControlId == panKnobMemberId_ &&
+        primitiveId == EuControlKnobCell::kID_Knob && panHandler_)
+    {
+        NEuCon::float32 value = 0.0F;
+        affectedPrimitive->GetValueAt(newValueIndex, value);
+        FB_TRACE("PAN_EVT track=%d index=%u raw=%.2f", channelOrder_.load(),
+            static_cast<unsigned>(newValueIndex), value);
+        panHandler_(std::clamp(value / 100.0F, -1.0F, 1.0F), newValueIndex, value);
+    }
+    else if (controlId == PanKnobSetId && arrayMemberControlId == panKnobMemberId_ &&
+        primitiveId == EuControlKnobCell::kID_KnobTouchSense)
+    {
+        NEuCon::int32 value = 0;
+        affectedPrimitive->GetValueAt(newValueIndex, value);
+        FB_TRACE("PAN_TOUCH track=%d state=%d index=%u", channelOrder_.load(),
+            value != 0 ? 1 : 0, static_cast<unsigned>(newValueIndex));
+    }
+    else if (controlId == PanKnobSetId && arrayMemberControlId == panKnobMemberId_ &&
+        primitiveId == EuControlKnobCell::kID_KnobTopSwitch && panResetHandler_)
+    {
+        NEuCon::int32 value = 0;
+        affectedPrimitive->GetValueAt(newValueIndex, value);
+        FB_TRACE("PAN_RESET_EVT track=%d state=%d index=%u", channelOrder_.load(), value,
+            static_cast<unsigned>(newValueIndex));
+        if (value != 0)
+        {
+            panResetHandler_(0.0F, newValueIndex, 0.0F);
+        }
     }
 }
