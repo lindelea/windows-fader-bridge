@@ -9,6 +9,7 @@
 #include "EuDefinitions.h"
 #include "EuconChannel.h"
 #include "WindowsCommandProcessor.h"
+#include "WindowsSystemProcessor.h"
 
 #include <algorithm>
 #include <cmath>
@@ -177,6 +178,7 @@ std::unique_ptr<EuconHost::TrackState> EuconHost::CreateTrack(const int channelO
         {
             commandQueued = kind == 2 ? audioController_->QueueMute(audioSlot, value != 0.0F)
                 : kind == 3 ? audioController_->QueueSetDefault(audioSlot)
+                : kind == 4 ? false
                 : audioController_->QueueVolume(audioSlot, value);
         }
         FB_TRACE("SURFACE_QUEUE track=%d slot=%d kind=%d value=%.4f queued=%d",
@@ -201,6 +203,12 @@ std::unique_ptr<EuconHost::TrackState> EuconHost::CreateTrack(const int channelO
         ? ApplicationChannelColor(key)
         : static_cast<NEuCon::int32>(strip.channelColor & 0x00FFFFFFU);
     EuconChannel::ChangeHandler recordArmHandler;
+    EuconChannel::ChangeHandler soloHandler;
+    if (strip.role == AudioStripRole::Application)
+    {
+        soloHandler = [report](const float value, const NEuCon::uint16 rawIndex,
+            const float rawValue) { report(value, 4, rawIndex, rawValue); };
+    }
     if (strip.defaultSelectable)
     {
         recordArmHandler = [report](const float value, const NEuCon::uint16 rawIndex,
@@ -214,9 +222,10 @@ std::unique_ptr<EuconHost::TrackState> EuconHost::CreateTrack(const int channelO
             const float rawValue) { report(value, 1, rawIndex, rawValue); },
         [report](const float value, const NEuCon::uint16 rawIndex,
             const float rawValue) { report(value, 2, rawIndex, rawValue); },
-        std::move(recordArmHandler), EuconTrackType(strip.role),
+        std::move(soloHandler), std::move(recordArmHandler), EuconTrackType(strip.role),
         strip.sortGroup == 0 ? L"Output" : strip.sortGroup == 1 ? L"Input" : L"Audio");
     track->channel->SetMuted(false);
+    track->channel->SetSoloed(strip.soloed);
     track->channel->SetRecordArmed(strip.isDefault);
     track->cache.isDefault = strip.isDefault;
     track->cache.trackType = EuconTrackType(strip.role);
@@ -370,14 +379,23 @@ EuconHost::EuconHost(const HWND notificationWindow) : notificationWindow_(notifi
 
     // Match the official EuConApp processor ordering: global command processor
     // before dynamic channel strips.
-    commandProcessor_ = std::make_unique<WindowsCommandProcessor>([this]
+    const auto clearSolo = [this]
     {
         if (audioController_)
         {
-            audioController_->QueueToggleMonoAudio();
+            audioController_->QueueClearSolo();
         }
-    });
+    };
+    commandProcessor_ = std::make_unique<WindowsCommandProcessor>([this]
+        {
+            if (audioController_)
+            {
+                audioController_->QueueToggleMonoAudio();
+            }
+        }, clearSolo);
     node_->RegisterProcessor(*commandProcessor_);
+    systemProcessor_ = std::make_unique<WindowsSystemProcessor>(clearSolo);
+    node_->RegisterProcessor(*systemProcessor_);
 
     node_->SetMeterInfo(kMeterType__Standard, -12.0F, -3.0F, 0.0F);
     node_->SetMeterInfo(kMeterType__SamplePeak, -12.0F, -3.0F, 0.0F);
@@ -406,6 +424,11 @@ EuconHost::~EuconHost()
             }
         }
         tracks_.clear();
+        if (systemProcessor_)
+        {
+            node_->UnregisterProcessor(*systemProcessor_);
+            systemProcessor_.reset();
+        }
         if (commandProcessor_)
         {
             node_->UnregisterProcessor(*commandProcessor_);
@@ -427,6 +450,8 @@ int EuconHost::ApplyAudioFrame(const AudioFrame& frame)
 
     ReconcileChannelTopology(frame);
     commandProcessor_->SetMonoAudioEnabled(frame.monoAudioEnabled);
+    commandProcessor_->SetSoloActive(frame.anySolo);
+    systemProcessor_->SetSoloActive(frame.anySolo);
     const auto now = std::chrono::steady_clock::now();
     const auto fullRefresh = node_->ConsumeRefreshRequest();
     EuBatchedMeterWriter meterWriter(*node_);
@@ -470,6 +495,11 @@ int EuconHost::ApplyAudioFrame(const AudioFrame& frame)
         {
             channel.SetRecordArmed(strip.isDefault);
             cache.isDefault = strip.isDefault;
+        }
+        if (!cache.active || fullRefresh || cache.soloed != strip.soloed)
+        {
+            channel.SetSoloed(strip.soloed);
+            cache.soloed = strip.soloed;
         }
 
         const auto volumeMatchesPending = cache.volumePending &&
@@ -608,6 +638,12 @@ bool EuconHost::HandleSurfaceChange(const SurfaceChange& change)
         // on the already-selected device is not an "unset default" command;
         // the next Core Audio frame restores the authoritative switch/LED.
         return change.commandQueued;
+    }
+    if (kind == 4)
+    {
+        // The callback only posted this stable track identity. Resolve and
+        // enqueue the intercancel operation here, outside EUCON's callback.
+        return audioController_ && audioController_->QueueToggleSolo(track->key);
     }
     return false;
 }

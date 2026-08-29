@@ -12,6 +12,7 @@
 
 class EuconChannel;
 class WindowsCommandProcessor;
+class WindowsSystemProcessor;
 
 constexpr UINT kSurfaceChangeMessage = WM_APP + 1;
 constexpr UINT kAudioFrameMessage = WM_APP + 2;
@@ -61,6 +62,7 @@ private:
         int pendingVolumeKind = 0;
         bool mutePending = false;
         bool isDefault = false;
+        bool soloed = false;
         int trackType = 0;
         float volume = 0.0F;
         float peakDb = -120.0F;
@@ -93,6 +95,7 @@ private:
     bool ready_ = false;
     std::unique_ptr<FaderBridgeNode> node_;
     std::unique_ptr<WindowsCommandProcessor> commandProcessor_;
+    std::unique_ptr<WindowsSystemProcessor> systemProcessor_;
     std::vector<std::unique_ptr<TrackState>> tracks_;
     std::unique_ptr<NativeAudioController> audioController_;
     bool motorFlushTimerActive_ = false;

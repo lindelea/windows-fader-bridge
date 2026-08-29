@@ -140,6 +140,38 @@ toggle after an external command even though the handler value and audio engine
 have changed; this is treated as a Windows UI-cache limitation, not audio state.
 Avid Control command placement and feedback remain to be verified.
 
+## Application Solo and Clear Solo
+
+Application tracks expose the standard `EuLayoutChannel::kNAM_Solo` switch as
+a two-state momentary latch. Windows Core Audio has no per-session Solo API, so
+the audio worker implements single-target intercancel Solo: the selected
+application is made audible and every other active application session is
+muted. Endpoint tracks are deliberately excluded; Solo never mutes a render or
+capture device.
+
+At the start of a Solo session, the worker saves each application's existing
+mute state by stable application identity. Pressing the same Solo again, or
+invoking Clear Solo, restores those saved states instead of blindly unmuting
+everything. Changing directly to another Solo target retains the original
+snapshot, unmutes the new target, and mutes the former target. Applications
+that appear while Solo is active are incorporated into the same policy without
+changing EUCON processor identity.
+
+Clear Solo is published in both documented forms:
+
+- the standard `EuLayoutSystem::kNAM_ClearSolo` one-shot switch on the single
+  System Processor;
+- an assignable `Key Commands -> Windows Audio -> Clear Solo` command.
+
+Both controls queue the same worker operation. Their application-owned LEDs
+remain on whenever any application is soloed, as required by guide section
+12.5. Channel Solo state and all Clear Solo LEDs are driven from the worker's
+authoritative audio frame rather than from an optimistic surface press.
+
+On 2026-08-29, the user verified channel Solo, direct intercancel switching,
+same-channel restore, Clear Solo, mute restoration, and LED feedback on the
+attached EUCON setup. A wider surface regression matrix remains desirable.
+
 ## Current conformance audit
 
 | Area | Status | Notes |
@@ -154,10 +186,11 @@ Avid Control command placement and feedback remain to be verified.
 | Track identity and ordering | Verified | Channel Processors are keyed by stable application identity. Mutable atomic routes target the current Core Audio slot; reordering retains the Processor and changes only `ChannelOrder` and channel number as specified by guide section 12.4. Verified smooth and near-zero-latency on the attached S3/Avid Control setup. |
 | Default endpoint selection | Verified | Active render/capture endpoints retain stable Processor identity. Rec is a one-shot request, Windows default state owns its LED, and Console/Multimedia/Communications roles switch together. Capture selection and reverse synchronization were verified on Windows 11 with S3. |
 | Windows mono command | Verified on S3 | A standards-based assignable command queues the Windows setting handler and Windows state owns its LED. Clear Solo press/LED and real mono processing were verified; Mix to Mons is fixed and unavailable for assignment. Avid Control remains to be tested. |
+| Application Solo / Clear Solo | Verified | Application channels use standard Solo semantics; the Windows worker performs single-target intercancel muting and restores the pre-Solo mute snapshot. The standard System Clear Solo and an assignable command share authoritative state and LED feedback. Endpoint channels are excluded. |
 | Volume knob semantics | Needs work | Volume currently borrows the predefined Input knob-set layout. Confirm the correct standard model or use an official knob-map strategy. |
 | Meter API 3.1 | Needs investigation | Setup calls return `kERR_OK`, but dynamically registered tracks did not receive the documented `VisibilityChangedV2` callback in the verified EuControl setup. The adapter now trusts callback state instead of querying/inventing visibility and uses an isolated, verified legacy write only while no valid 3.1 handle exists. |
 | Device-derived behavior | Needs review | Forced refresh and overtravel rebound came from hardware testing. Classify them as generic application policy or remove them after cross-surface tests. |
-| Optional global processors | Needs review | Add Project, System, Monitor, Transport, or Assignable Knob only when Windows Mixer exposes the matching standard semantics. |
+| Optional global processors | Partially conformant | The single System Processor now exposes documented Clear Solo semantics. Add Project, Monitor, Transport, or Assignable Knob only when Windows supplies a matching standard concept. |
 
 ## Migration rules
 
@@ -176,9 +209,9 @@ Avid Control command placement and feedback remain to be verified.
 2. Audit attributes and knob modeling against the complete guide sections and
    current installed header contracts; use official examples only as supporting
    evidence.
-4. Move remaining SDK output out of callback threads.
-5. Instrument meter negotiation and retire the ordinary fallback only when the
+3. Move remaining SDK output out of callback threads.
+4. Instrument meter negotiation and retire the ordinary fallback only when the
    documented Meter API 3.1 path is reliable on all attached test surfaces.
-6. Run the same regression matrix on S3 and Avid Control: discovery, banking,
+5. Run the same regression matrix on S3 and Avid Control: discovery, banking,
    assignment/layout recall, fader/touch/motor, encoder/touch/ring, mute/LED,
    labels, and peak meters.

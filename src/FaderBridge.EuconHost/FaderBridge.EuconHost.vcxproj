@@ -78,6 +78,7 @@
     <ClCompile Include="main.cpp" />
     <ClCompile Include="NativeAudioController.cpp" />
     <ClCompile Include="WindowsCommandProcessor.cpp" />
+    <ClCompile Include="WindowsSystemProcessor.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="DiagnosticLog.h" />
@@ -85,6 +86,7 @@
     <ClInclude Include="EuconHost.h" />
     <ClInclude Include="NativeAudioController.h" />
     <ClInclude Include="WindowsCommandProcessor.h" />
+    <ClInclude Include="WindowsSystemProcessor.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

@@ -6,6 +6,7 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -29,6 +30,7 @@ struct AudioStripState
     bool muted = false;
     bool defaultSelectable = false;
     bool isDefault = false;
+    bool soloed = false;
     float volume = 0.0F;
     float peakDb = -120.0F;
     std::uint32_t channelColor = NoChannelColor;
@@ -40,6 +42,7 @@ struct AudioFrame
 {
     std::vector<AudioStripState> strips;
     bool monoAudioEnabled = false;
+    bool anySolo = false;
 };
 
 class NativeAudioController final
@@ -60,6 +63,8 @@ public:
     bool QueueMute(int slot, bool muted) noexcept;
     bool QueueSetDefault(int slot) noexcept;
     bool QueueToggleMonoAudio() noexcept;
+    bool QueueToggleSolo(const std::wstring& trackKey);
+    bool QueueClearSolo();
     bool IsReady() const noexcept { return ready_.load(); }
 
 private:
@@ -80,6 +85,13 @@ private:
     std::atomic<int> pendingDefaultSlot_ = -1;
     std::atomic<unsigned long long> defaultVersion_ = 0;
     std::atomic<unsigned long long> monoToggleVersion_ = 0;
+    struct SoloCommand
+    {
+        bool clear = false;
+        std::wstring trackKey;
+    };
+    std::mutex soloCommandMutex_;
+    std::vector<SoloCommand> pendingSoloCommands_;
     HANDLE wakeEvent_ = nullptr;
     std::thread worker_;
     std::unique_ptr<Impl> impl_;

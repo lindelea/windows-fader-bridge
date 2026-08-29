@@ -43,12 +43,14 @@ EuconChannel::EuconChannel(const int channelOrder, const NEuCon::int32 channelCo
     const std::wstring& persistenceId,
     const std::wstring& displayName, ChangeHandler faderHandler,
     ChangeHandler knobHandler, ChangeHandler muteHandler,
-    ChangeHandler recordArmHandler, const NEuCon::int32 trackType,
+    ChangeHandler soloHandler, ChangeHandler recordArmHandler,
+    const NEuCon::int32 trackType,
     const std::wstring& channelType)
     : channelOrder_(channelOrder),
       faderHandler_(std::move(faderHandler)),
       knobHandler_(std::move(knobHandler)),
       muteHandler_(std::move(muteHandler)),
+      soloHandler_(std::move(soloHandler)),
       recordArmHandler_(std::move(recordArmHandler)),
       fader_(this), name_(this), number_(this), meter_(this), knobSet_(this), knob_(this)
 {
@@ -68,6 +70,10 @@ EuconChannel::EuconChannel(const int channelOrder, const NEuCon::int32 channelCo
         std::to_wstring(channelOrder));
     InitializeMeter();
     InitializeKnob();
+    if (soloHandler_)
+    {
+        InitializeSolo();
+    }
     if (recordArmHandler_)
     {
         InitializeRecordArm();
@@ -76,6 +82,11 @@ EuconChannel::EuconChannel(const int channelOrder, const NEuCon::int32 channelCo
 
 EuconChannel::~EuconChannel()
 {
+    if (solo_)
+    {
+        RemoveControl(*solo_);
+        solo_.reset();
+    }
     if (recordArm_)
     {
         RemoveControl(*recordArm_);
@@ -87,6 +98,29 @@ EuconChannel::~EuconChannel()
     RemoveControl(number_);
     RemoveControl(name_);
     RemoveControl(fader_);
+}
+
+void EuconChannel::InitializeSolo()
+{
+    // Getting Started with EuCon 12.5 and the current EuLayoutChannel contract:
+    // channel Solo is a persistent two-state MomentaryLatch. Windows applies
+    // the intercancel policy asynchronously, so the application owns the LED
+    // and confirms the authoritative state in SetSoloed().
+    solo_ = std::make_unique<EuControlSwitch>(this);
+    solo_->SetId(SoloId);
+    solo_->SetAttribute(kATRIBID_LayoutName0, EuLayoutChannel::kNAM_Solo);
+    EuPrimitiveControl* primitive = nullptr;
+    if (solo_->GetPrimitive(EuControlSwitch::kID_Switch, &primitive) == kERR_OK && primitive)
+    {
+        primitive->Initialize(kTYP_Int, 2U);
+        primitive->LoadValueTableInterpolated(0, 1);
+        if (auto* switchPrimitive = dynamic_cast<EuPrimitiveSwitch*>(primitive))
+        {
+            switchPrimitive->SetSwitchMode(kSWITCH_MomentaryLatch);
+        }
+    }
+    solo_->SetLedOverride(true);
+    AddControl(*solo_);
 }
 
 void EuconChannel::InitializeRecordArm()
@@ -327,6 +361,26 @@ void EuconChannel::SetMuted(const bool muted)
     }
 }
 
+void EuconChannel::SetSoloed(const bool soloed)
+{
+    if (!solo_)
+    {
+        return;
+    }
+    EuPrimitiveControl* primitive = nullptr;
+    if (solo_->GetPrimitive(EuControlSwitch::kID_Switch, &primitive) == kERR_OK && primitive)
+    {
+        primitive->SetCurrentValue(soloed ? 1 : 0);
+    }
+    primitive = nullptr;
+    if (solo_->GetPrimitive(EuControlSwitch::kID_Led, &primitive) == kERR_OK && primitive)
+    {
+        primitive->SetCurrentIndex(static_cast<NEuCon::uint16>(
+            soloed ? kLEDStatus_On : kLEDStatus_Off));
+        primitive->Refresh();
+    }
+}
+
 void EuconChannel::SetRecordArmed(const bool armed)
 {
     if (!recordArm_)
@@ -502,6 +556,15 @@ void EuconChannel::OnPrimitiveCallback(const tEVT eventType, NEuCon::uint32,
         FB_TRACE("RECORD_ARM_EVT track=%d state=%d index=%u", channelOrder_.load(), value,
             static_cast<unsigned>(newValueIndex));
         recordArmHandler_(static_cast<float>(value), newValueIndex,
+            static_cast<float>(value));
+    }
+    else if (controlId == SoloId && primitiveId == EuControlSwitch::kID_Switch && soloHandler_)
+    {
+        NEuCon::int32 value = 0;
+        affectedPrimitive->GetValueAt(newValueIndex, value);
+        FB_TRACE("SOLO_EVT track=%d state=%d index=%u", channelOrder_.load(), value,
+            static_cast<unsigned>(newValueIndex));
+        soloHandler_(static_cast<float>(value), newValueIndex,
             static_cast<float>(value));
     }
     else if (controlId == KnobSetId && arrayMemberControlId == knobMemberId_ &&

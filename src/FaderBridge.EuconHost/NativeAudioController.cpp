@@ -865,6 +865,9 @@ struct NativeAudioController::Impl
     std::array<unsigned long long, StripCount> appliedMuteVersions{};
     unsigned long long appliedDefaultVersion = 0;
     unsigned long long appliedMonoToggleVersion = 0;
+    bool soloActive = false;
+    std::wstring soloTargetKey;
+    std::unordered_map<std::wstring, bool> preSoloMutes;
     MonoAudioSetting monoAudioSetting;
     HANDLE wakeEvent = nullptr;
     std::atomic_bool* changePending = nullptr;
@@ -1462,10 +1465,155 @@ struct NativeAudioController::Impl
         return changed;
     }
 
+    static bool ReadApplicationMute(Slot& slot, bool& muted)
+    {
+        if (slot.kind != SlotKind::Application || slot.sessions.empty())
+        {
+            return false;
+        }
+        auto selected = std::find_if(slot.sessions.begin(), slot.sessions.end(),
+            [&slot](const Session& session)
+            {
+                return !slot.preferredMuteSession.empty() &&
+                    session.identifier == slot.preferredMuteSession;
+            });
+        if (selected == slot.sessions.end())
+        {
+            selected = std::find_if(slot.sessions.begin(), slot.sessions.end(),
+                [](const Session& session) { return session.persistentAppIdentity; });
+        }
+        if (selected == slot.sessions.end())
+        {
+            selected = slot.sessions.begin();
+        }
+        BOOL value = FALSE;
+        if (!selected->volume || FAILED(selected->volume->GetMute(&value)))
+        {
+            return false;
+        }
+        muted = value != FALSE;
+        return true;
+    }
+
+    static bool SetApplicationMute(Slot& slot, const bool muted)
+    {
+        if (slot.kind != SlotKind::Application || slot.sessions.empty())
+        {
+            return false;
+        }
+        bool changed = false;
+        for (const auto& session : slot.sessions)
+        {
+            BOOL current = FALSE;
+            if (session.volume && SUCCEEDED(session.volume->GetMute(&current)) &&
+                (current != FALSE) != muted &&
+                SUCCEEDED(session.volume->SetMute(muted, nullptr)))
+            {
+                changed = true;
+            }
+        }
+        return changed;
+    }
+
+    bool ApplySoloPolicy()
+    {
+        if (!soloActive)
+        {
+            return false;
+        }
+        bool changed = false;
+        for (auto& slot : slots)
+        {
+            if (slot.kind != SlotKind::Application || slot.sessions.empty())
+            {
+                continue;
+            }
+            if (preSoloMutes.find(slot.key) == preSoloMutes.end())
+            {
+                bool muted = false;
+                if (ReadApplicationMute(slot, muted))
+                {
+                    preSoloMutes.emplace(slot.key, muted);
+                }
+            }
+            // Windows has no native session Solo. Intercancel Solo is modeled
+            // by making the target audible and muting every other application.
+            changed = SetApplicationMute(slot, slot.key != soloTargetKey) || changed;
+        }
+        return changed;
+    }
+
+    bool ClearSolo()
+    {
+        if (!soloActive)
+        {
+            return false;
+        }
+        bool changed = false;
+        for (auto& slot : slots)
+        {
+            if (slot.kind != SlotKind::Application || slot.sessions.empty())
+            {
+                continue;
+            }
+            const auto saved = preSoloMutes.find(slot.key);
+            if (saved != preSoloMutes.end())
+            {
+                changed = SetApplicationMute(slot, saved->second) || changed;
+            }
+        }
+        FB_TRACE("SOLO_CLEAR target=%ls restored=%u", soloTargetKey.c_str(),
+            static_cast<unsigned>(preSoloMutes.size()));
+        soloActive = false;
+        soloTargetKey.clear();
+        preSoloMutes.clear();
+        return changed;
+    }
+
+    bool ToggleSolo(const std::wstring& trackKey)
+    {
+        const auto target = std::find_if(slots.begin(), slots.end(),
+            [&trackKey](const Slot& slot)
+            {
+                return slot.kind == SlotKind::Application && !slot.sessions.empty() &&
+                    slot.key == trackKey;
+            });
+        if (target == slots.end())
+        {
+            FB_TRACE("SOLO_REJECT missing_target=1");
+            return false;
+        }
+        if (soloActive && soloTargetKey == trackKey)
+        {
+            ClearSolo();
+            return true;
+        }
+        if (!soloActive)
+        {
+            preSoloMutes.clear();
+            for (auto& slot : slots)
+            {
+                bool muted = false;
+                if (slot.kind == SlotKind::Application && !slot.sessions.empty() &&
+                    ReadApplicationMute(slot, muted))
+                {
+                    preSoloMutes.emplace(slot.key, muted);
+                }
+            }
+        }
+        soloActive = true;
+        soloTargetKey = trackKey;
+        FB_TRACE("SOLO_SET target=%ls saved=%u", soloTargetKey.c_str(),
+            static_cast<unsigned>(preSoloMutes.size()));
+        ApplySoloPolicy();
+        return true;
+    }
+
     std::unique_ptr<AudioFrame> MakeFrame()
     {
         auto frame = std::make_unique<AudioFrame>();
         monoAudioSetting.Get(frame->monoAudioEnabled);
+        frame->anySolo = soloActive;
         frame->strips.reserve(StripCount);
         for (int index = 0; index < StripCount; ++index)
         {
@@ -1484,6 +1632,8 @@ struct NativeAudioController::Impl
                 ? slot.channelColor : AudioStripState::NoChannelColor;
             strip.defaultSelectable = endpointSlot;
             strip.isDefault = endpointSlot && slot.isDefault;
+            strip.soloed = slot.kind == SlotKind::Application && soloActive &&
+                slot.key == soloTargetKey;
             strip.sortGroup = slot.kind == SlotKind::RenderEndpoint ? 0 :
                 slot.kind == SlotKind::CaptureEndpoint ? 1 : 2;
             strip.role = slot.kind == SlotKind::RenderEndpoint
@@ -1750,6 +1900,44 @@ bool NativeAudioController::QueueToggleMonoAudio() noexcept
     return true;
 }
 
+bool NativeAudioController::QueueToggleSolo(const std::wstring& trackKey)
+{
+    if (!running_ || trackKey.empty())
+    {
+        return false;
+    }
+    try
+    {
+        const std::scoped_lock lock(soloCommandMutex_);
+        pendingSoloCommands_.push_back({ false, trackKey });
+    }
+    catch (...)
+    {
+        return false;
+    }
+    SetEvent(wakeEvent_);
+    return true;
+}
+
+bool NativeAudioController::QueueClearSolo()
+{
+    if (!running_)
+    {
+        return false;
+    }
+    try
+    {
+        const std::scoped_lock lock(soloCommandMutex_);
+        pendingSoloCommands_.push_back({ true, {} });
+    }
+    catch (...)
+    {
+        return false;
+    }
+    SetEvent(wakeEvent_);
+    return true;
+}
+
 void NativeAudioController::Run()
 {
     if (FAILED(CoInitializeEx(nullptr, COINIT_MULTITHREADED)))
@@ -1832,6 +2020,22 @@ void NativeAudioController::Run()
             }
         }
 
+        std::vector<SoloCommand> soloCommands;
+        {
+            const std::scoped_lock lock(soloCommandMutex_);
+            soloCommands.swap(pendingSoloCommands_);
+        }
+        for (const auto& command : soloCommands)
+        {
+            const auto accepted = command.clear
+                ? (impl_->ClearSolo(), true)
+                : impl_->ToggleSolo(command.trackKey);
+            if (accepted)
+            {
+                sessionChangePending_.store(true, std::memory_order_release);
+            }
+        }
+
         const auto afterCommands = std::chrono::steady_clock::now();
         const auto discoveryEvent = sessionDiscoveryPending_.exchange(false,
             std::memory_order_acq_rel);
@@ -1840,7 +2044,15 @@ void NativeAudioController::Run()
             impl_->RefreshEndpoints();
             impl_->EnsureDefaultRenderManager();
             impl_->RefreshApplications();
+            if (impl_->ApplySoloPolicy())
+            {
+                sessionChangePending_.store(true, std::memory_order_release);
+            }
             nextDiscovery = afterCommands + kDiscoveryPeriod;
+        }
+        else if (impl_->ApplySoloPolicy())
+        {
+            sessionChangePending_.store(true, std::memory_order_release);
         }
         const auto volumeEvent = sessionChangePending_.exchange(false,
             std::memory_order_acq_rel);

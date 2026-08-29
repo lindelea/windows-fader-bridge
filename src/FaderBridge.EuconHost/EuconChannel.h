@@ -26,7 +26,8 @@ public:
                  const std::wstring& persistenceId,
                  const std::wstring& displayName, ChangeHandler faderHandler,
                  ChangeHandler knobHandler, ChangeHandler muteHandler,
-                 ChangeHandler recordArmHandler = {}, NEuCon::int32 trackType = 0,
+                 ChangeHandler soloHandler = {}, ChangeHandler recordArmHandler = {},
+                 NEuCon::int32 trackType = 0,
                  const std::wstring& channelType = L"Audio");
     ~EuconChannel() override;
 
@@ -36,6 +37,7 @@ public:
     void SetOrder(int channelOrder);
     void ApplyPendingFaderRebound();
     void SetMuted(bool muted);
+    void SetSoloed(bool soloed);
     void SetRecordArmed(bool armed);
     void SetTrackMetadata(NEuCon::int32 trackType, const std::wstring& channelType);
     void PostRegisterMeterInitialization();
@@ -55,6 +57,7 @@ private:
         NumberId,
         MeterId,
         KnobSetId,
+        SoloId,
         RecordArmId,
     };
 
@@ -63,12 +66,14 @@ private:
         NEuCon::int32 layoutName, const std::wstring& text);
     void InitializeMeter();
     void InitializeKnob();
+    void InitializeSolo();
     void InitializeRecordArm();
 
     std::atomic<int> channelOrder_;
     ChangeHandler faderHandler_;
     ChangeHandler knobHandler_;
     ChangeHandler muteHandler_;
+    ChangeHandler soloHandler_;
     ChangeHandler recordArmHandler_;
 
     EuControlFader fader_;
@@ -77,6 +82,7 @@ private:
     EuControlMultiMeter meter_;
     EuControlKnobCellArray knobSet_;
     EuControlKnobCell knob_;
+    std::unique_ptr<EuControlSwitch> solo_;
     std::unique_ptr<EuControlSwitch> recordArm_;
     NEuCon::uint32 knobMemberId_ = 0;
     std::atomic_bool faderReboundPending_ = false;

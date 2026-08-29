@@ -6,9 +6,11 @@
 
 #include <utility>
 
-WindowsCommandProcessor::WindowsCommandProcessor(MonoToggleHandler monoToggleHandler)
+WindowsCommandProcessor::WindowsCommandProcessor(CommandHandler monoToggleHandler,
+    CommandHandler clearSoloHandler)
     : monoToggleHandler_(std::move(monoToggleHandler)),
-      windowsAudioCommands_(this), monoAudio_(this)
+      clearSoloHandler_(std::move(clearSoloHandler)),
+      windowsAudioCommands_(this), monoAudio_(this), clearSolo_(this)
 {
     SetAttribute(kATRIBID_ProcessorType, kProcType_Command);
     SetAttribute(kATRIBID_ContainsSoftKeys, 1);
@@ -42,12 +44,48 @@ WindowsCommandProcessor::WindowsCommandProcessor(MonoToggleHandler monoToggleHan
     // the current Windows accessibility setting, including external changes.
     monoAudio_.SetLedOverride(true);
     windowsAudioCommands_.PushBack(&monoAudio_, monoAudioMemberId_);
+
+    clearSolo_.SetAttribute(kATRIBID_SimpleUserVisibleName, tEuString(L"Clear Solo"));
+    clearSolo_.SetPersistenceID(
+        tEuString(L"FaderBridge.WindowsAudio.Commands.ClearSolo.v1"));
+    primitive = nullptr;
+    if (clearSolo_.GetPrimitive(EuControlSwitch::kID_Switch, &primitive) == kERR_OK &&
+        primitive)
+    {
+        primitive->Initialize(kTYP_Int, 1U);
+        primitive->LoadValueTableInterpolated(0, 0);
+        if (auto* switchPrimitive = dynamic_cast<EuPrimitiveSwitch*>(primitive))
+        {
+            switchPrimitive->SetSwitchMode(kSWITCH_OneShot);
+        }
+    }
+    // Section 12.5 requires Clear Solo to remain lit while any channel is
+    // soloed. This assignable command mirrors the standard System control.
+    clearSolo_.SetLedOverride(true);
+    windowsAudioCommands_.PushBack(&clearSolo_, clearSoloMemberId_);
 }
 
 WindowsCommandProcessor::~WindowsCommandProcessor()
 {
+    windowsAudioCommands_.Remove(clearSoloMemberId_);
     windowsAudioCommands_.Remove(monoAudioMemberId_);
     RemoveControl(windowsAudioCommands_);
+}
+
+void WindowsCommandProcessor::SetSoloActive(const bool active)
+{
+    if (soloActive_ == active)
+    {
+        return;
+    }
+    soloActive_ = active;
+    EuPrimitiveControl* primitive = nullptr;
+    if (clearSolo_.GetPrimitive(EuControlSwitch::kID_Led, &primitive) == kERR_OK && primitive)
+    {
+        primitive->SetCurrentIndex(static_cast<NEuCon::uint16>(
+            active ? kLEDStatus_On : kLEDStatus_Off));
+        primitive->Refresh();
+    }
 }
 
 void WindowsCommandProcessor::SetMonoAudioEnabled(const bool enabled)
@@ -79,11 +117,18 @@ void WindowsCommandProcessor::OnPrimitiveCallback(const tEVT eventType,
 {
     // EUCON owns this callback thread. Queue only; all Windows work and all
     // EUCON feedback writes happen on their existing owning threads.
-    if (eventType == kEVT_PRIM_StateChange &&
-        controlId == WindowsAudioContainerId &&
-        arrayMemberControlId == monoAudioMemberId_ && monoToggleHandler_)
+    if (eventType != kEVT_PRIM_StateChange || controlId != WindowsAudioContainerId)
+    {
+        return;
+    }
+    if (arrayMemberControlId == monoAudioMemberId_ && monoToggleHandler_)
     {
         FB_TRACE("MONO_AUDIO_SURFACE_TOGGLE");
         monoToggleHandler_();
+    }
+    else if (arrayMemberControlId == clearSoloMemberId_ && clearSoloHandler_)
+    {
+        FB_TRACE("CLEAR_SOLO_COMMAND");
+        clearSoloHandler_();
     }
 }
