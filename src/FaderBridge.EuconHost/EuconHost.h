@@ -11,7 +11,7 @@
 #include <vector>
 
 class EuconChannel;
-class ExProcessorCommand;
+class WindowsCommandProcessor;
 
 constexpr UINT kSurfaceChangeMessage = WM_APP + 1;
 constexpr UINT kAudioFrameMessage = WM_APP + 2;
@@ -92,7 +92,7 @@ private:
     int initializationError_ = 0;
     bool ready_ = false;
     std::unique_ptr<FaderBridgeNode> node_;
-    std::unique_ptr<ExProcessorCommand> commandProcessor_;
+    std::unique_ptr<WindowsCommandProcessor> commandProcessor_;
     std::vector<std::unique_ptr<TrackState>> tracks_;
     std::unique_ptr<NativeAudioController> audioController_;
     bool motorFlushTimerActive_ = false;

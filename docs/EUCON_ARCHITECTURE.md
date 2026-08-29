@@ -103,6 +103,43 @@ Each track exposes standard EUCON semantics where applicable:
 - level meter with negotiated format;
 - standard knob sets or knob maps only when their semantics match.
 
+## Application commands and Windows mono audio
+
+Windows' global accessibility mono mix is application-wide state, not a
+channel-strip or monitor-room control. The EUCON SDK defines no standard Mono
+Audio or Mix-to-Monitors layout name. Fader Bridge therefore publishes it by
+the documented application-command model:
+
+```text
+Key Commands -> Windows Audio -> Mono Audio
+```
+
+`Mono Audio` is a one-shot `EuControlSwitch` in a command processor. Its
+callback only queues work to the Windows audio worker. The worker toggles the
+Windows setting named
+`SystemSettings_Accessibility_IsAudioMonoMixStateEnabled` through the same
+`SettingsHandlers_Accessibility.dll` data-model object used by Windows
+Settings; no audio-service restart is allowed. Microsoft publishes no desktop
+API for this switch, so the dynamically loaded `GetSetting` /
+`SystemSettings.DataModel.ISettingItem` path is an isolated Windows-internal
+compatibility boundary. The authoritative handler value is read on audio
+frames and drives an application-owned EUCON LED, so a change made in Windows
+Settings also updates the assigned surface key.
+
+EuControl owns physical placement. A user may assign this command to any key
+that the EuControl Soft Keys editor exposes. Production code must not name an
+S3 or claim a fixed key directly. On the tested S3, Mix to Mons is a fixed
+onboard monitor/talkback control and is not assignable; Clear Solo was used as
+the temporary test key.
+
+On 2026-08-29, S3 button presses changed the real Windows audio engine between
+stereo and mono, a professional stereo balance meter confirmed the processing,
+and the assigned LED followed in both directions. Windows Settings changes also
+drove the LED. An already-open Windows Settings page can retain a stale visual
+toggle after an external command even though the handler value and audio engine
+have changed; this is treated as a Windows UI-cache limitation, not audio state.
+Avid Control command placement and feedback remain to be verified.
+
 ## Current conformance audit
 
 | Area | Status | Notes |
@@ -116,6 +153,7 @@ Each track exposes standard EUCON semantics where applicable:
 | Callback thread discipline | Mostly conformant | Core Audio writes are queued; remaining SDK calls from callbacks require review. |
 | Track identity and ordering | Verified | Channel Processors are keyed by stable application identity. Mutable atomic routes target the current Core Audio slot; reordering retains the Processor and changes only `ChannelOrder` and channel number as specified by guide section 12.4. Verified smooth and near-zero-latency on the attached S3/Avid Control setup. |
 | Default endpoint selection | Verified | Active render/capture endpoints retain stable Processor identity. Rec is a one-shot request, Windows default state owns its LED, and Console/Multimedia/Communications roles switch together. Capture selection and reverse synchronization were verified on Windows 11 with S3. |
+| Windows mono command | Verified on S3 | A standards-based assignable command queues the Windows setting handler and Windows state owns its LED. Clear Solo press/LED and real mono processing were verified; Mix to Mons is fixed and unavailable for assignment. Avid Control remains to be tested. |
 | Volume knob semantics | Needs work | Volume currently borrows the predefined Input knob-set layout. Confirm the correct standard model or use an official knob-map strategy. |
 | Meter API 3.1 | Needs investigation | Setup calls return `kERR_OK`, but dynamically registered tracks did not receive the documented `VisibilityChangedV2` callback in the verified EuControl setup. The adapter now trusts callback state instead of querying/inventing visibility and uses an isolated, verified legacy write only while no valid 3.1 handle exists. |
 | Device-derived behavior | Needs review | Forced refresh and overtravel rebound came from hardware testing. Classify them as generic application policy or remove them after cross-surface tests. |

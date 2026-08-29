@@ -39,6 +39,7 @@ struct AudioStripState
 struct AudioFrame
 {
     std::vector<AudioStripState> strips;
+    bool monoAudioEnabled = false;
 };
 
 class NativeAudioController final
@@ -58,6 +59,7 @@ public:
     bool QueueVolume(int slot, float volume) noexcept;
     bool QueueMute(int slot, bool muted) noexcept;
     bool QueueSetDefault(int slot) noexcept;
+    bool QueueToggleMonoAudio() noexcept;
     bool IsReady() const noexcept { return ready_.load(); }
 
 private:
@@ -77,6 +79,7 @@ private:
     std::array<std::atomic<unsigned long long>, StripCount> muteVersions_{};
     std::atomic<int> pendingDefaultSlot_ = -1;
     std::atomic<unsigned long long> defaultVersion_ = 0;
+    std::atomic<unsigned long long> monoToggleVersion_ = 0;
     HANDLE wakeEvent_ = nullptr;
     std::thread worker_;
     std::unique_ptr<Impl> impl_;

@@ -8,7 +8,7 @@
 #include "EuConManager.h"
 #include "EuDefinitions.h"
 #include "EuconChannel.h"
-#include "ExProcessorCommand.h"
+#include "WindowsCommandProcessor.h"
 
 #include <algorithm>
 #include <cmath>
@@ -370,7 +370,13 @@ EuconHost::EuconHost(const HWND notificationWindow) : notificationWindow_(notifi
 
     // Match the official EuConApp processor ordering: global command processor
     // before dynamic channel strips.
-    commandProcessor_ = std::make_unique<ExProcessorCommand>();
+    commandProcessor_ = std::make_unique<WindowsCommandProcessor>([this]
+    {
+        if (audioController_)
+        {
+            audioController_->QueueToggleMonoAudio();
+        }
+    });
     node_->RegisterProcessor(*commandProcessor_);
 
     node_->SetMeterInfo(kMeterType__Standard, -12.0F, -3.0F, 0.0F);
@@ -420,6 +426,7 @@ int EuconHost::ApplyAudioFrame(const AudioFrame& frame)
     }
 
     ReconcileChannelTopology(frame);
+    commandProcessor_->SetMonoAudioEnabled(frame.monoAudioEnabled);
     const auto now = std::chrono::steady_clock::now();
     const auto fullRefresh = node_->ConsumeRefreshRequest();
     EuBatchedMeterWriter meterWriter(*node_);

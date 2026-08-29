@@ -24,6 +24,7 @@ float g_lastValue = 0.0F;
 NEuCon::uint16 g_lastRawIndex = 0U;
 float g_lastRawTableValue = 0.0F;
 bool g_lastCommandSent = false;
+bool g_monoAudioEnabled = false;
 
 const wchar_t* ChangeKindName(const int kind)
 {
@@ -49,6 +50,7 @@ void PaintWindow(const HWND window)
 
     std::wostringstream text;
     text << L"Windows audio channels (linear 0–100% mapping)\r\n\r\n";
+    text << L"Mono audio: " << (g_monoAudioEnabled ? L"ON" : L"off") << L"\r\n\r\n";
     text << std::fixed << std::setprecision(0);
     std::vector<const AudioStripState*> visibleStrips;
     for (const auto& strip : g_strips)
@@ -168,6 +170,8 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         }
 
         bool visibleStateChanged = false;
+        visibleStateChanged = g_monoAudioEnabled != frame->monoAudioEnabled;
+        g_monoAudioEnabled = frame->monoAudioEnabled;
         for (const auto& strip : frame->strips)
         {
             if (strip.slot < 0 || strip.slot >= EuconHost::MaxChannelCount)

@@ -6,11 +6,13 @@
 #include <Endpointvolume.h>
 #include <Mmdeviceapi.h>
 #include <Propsys.h>
+#include <Roapi.h>
 #include <ShObjIdl.h>
 #include <Shlwapi.h>
 #include <appmodel.h>
 #include <avrt.h>
 #include <wrl/client.h>
+#include <winstring.h>
 
 #include <algorithm>
 #include <chrono>
@@ -69,6 +71,105 @@ enum class SlotKind
     Application,
     RenderEndpoint,
     CaptureEndpoint,
+};
+
+class MonoAudioSetting final
+{
+public:
+    ~MonoAudioSetting()
+    {
+        item_.Reset();
+        if (module_)
+        {
+            FreeLibrary(module_);
+        }
+    }
+
+    bool Initialize()
+    {
+        module_ = LoadLibraryExW(L"SettingsHandlers_Accessibility.dll", nullptr,
+            LOAD_LIBRARY_SEARCH_SYSTEM32);
+        if (!module_)
+        {
+            FB_TRACE("MONO_SETTING_INIT load=%08X", GetLastError());
+            return false;
+        }
+        using GetSettingFn = HRESULT(WINAPI*)(HSTRING, IInspectable**);
+        const auto getSetting = reinterpret_cast<GetSettingFn>(
+            GetProcAddress(module_, "GetSetting"));
+        if (!getSetting)
+        {
+            FB_TRACE("MONO_SETTING_INIT export=%08X", GetLastError());
+            return false;
+        }
+
+        constexpr wchar_t settingName[] =
+            L"SystemSettings_Accessibility_IsAudioMonoMixStateEnabled";
+        HSTRING settingId = nullptr;
+        auto result = WindowsCreateString(settingName,
+            static_cast<UINT32>(std::size(settingName) - 1U), &settingId);
+        ComPtr<IInspectable> returned;
+        if (SUCCEEDED(result))
+        {
+            result = getSetting(settingId, returned.GetAddressOf());
+        }
+        if (settingId)
+        {
+            WindowsDeleteString(settingId);
+        }
+        if (FAILED(result) || !returned)
+        {
+            FB_TRACE("MONO_SETTING_INIT get=%08X", static_cast<unsigned>(result));
+            return false;
+        }
+
+        // GetSetting returns SystemSettings.DataModel.ISettingItem. This is a
+        // Windows-internal compatibility boundary, so require its stable IID
+        // before using the interface's boolean Value ABI.
+        static const IID iidSettingItem =
+        { 0x40c037cc, 0xd8bf, 0x489e,
+          { 0x86, 0x97, 0xd6, 0x6b, 0xaa, 0x32, 0x21, 0xbf } };
+        result = returned->QueryInterface(iidSettingItem,
+            reinterpret_cast<void**>(item_.GetAddressOf()));
+        FB_TRACE("MONO_SETTING_INIT query=%08X ready=%d",
+            static_cast<unsigned>(result), item_ ? 1 : 0);
+        return SUCCEEDED(result) && item_;
+    }
+
+    bool Get(bool& enabled) const noexcept
+    {
+        if (!item_)
+        {
+            return false;
+        }
+        using GetValueFn = bool(__fastcall*)(void*);
+        const auto vtable = *reinterpret_cast<void***>(item_.Get());
+        const auto getValue = reinterpret_cast<GetValueFn>(vtable[33]);
+        enabled = getValue(item_.Get());
+        return true;
+    }
+
+    bool Set(const bool enabled) const noexcept
+    {
+        if (!item_)
+        {
+            return false;
+        }
+        using SetValueFn = HRESULT(__fastcall*)(void*, bool);
+        const auto vtable = *reinterpret_cast<void***>(item_.Get());
+        const auto setValue = reinterpret_cast<SetValueFn>(vtable[27]);
+        const auto result = setValue(item_.Get(), enabled);
+        bool confirmed = false;
+        const auto read = Get(confirmed);
+        FB_TRACE("MONO_SETTING_WRITE enabled=%d hr=%08X read=%d confirmed=%d",
+            enabled ? 1 : 0, static_cast<unsigned>(result), read ? 1 : 0,
+            confirmed ? 1 : 0);
+        return SUCCEEDED(result) && read && confirmed == enabled;
+    }
+
+private:
+    HMODULE module_ = nullptr;
+    ComPtr<IInspectable> item_;
 };
 
 class EndpointNotifications final : public IMMNotificationClient
@@ -763,6 +864,8 @@ struct NativeAudioController::Impl
     std::array<unsigned long long, StripCount> appliedVolumeVersions{};
     std::array<unsigned long long, StripCount> appliedMuteVersions{};
     unsigned long long appliedDefaultVersion = 0;
+    unsigned long long appliedMonoToggleVersion = 0;
+    MonoAudioSetting monoAudioSetting;
     HANDLE wakeEvent = nullptr;
     std::atomic_bool* changePending = nullptr;
     std::atomic_bool* discoveryPending = nullptr;
@@ -904,6 +1007,7 @@ struct NativeAudioController::Impl
 
     bool Initialize()
     {
+        monoAudioSetting.Initialize();
         if (FAILED(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
             IID_PPV_ARGS(&enumerator))))
         {
@@ -1361,6 +1465,7 @@ struct NativeAudioController::Impl
     std::unique_ptr<AudioFrame> MakeFrame()
     {
         auto frame = std::make_unique<AudioFrame>();
+        monoAudioSetting.Get(frame->monoAudioEnabled);
         frame->strips.reserve(StripCount);
         for (int index = 0; index < StripCount; ++index)
         {
@@ -1634,6 +1739,17 @@ bool NativeAudioController::QueueSetDefault(const int slot) noexcept
     return true;
 }
 
+bool NativeAudioController::QueueToggleMonoAudio() noexcept
+{
+    if (!running_)
+    {
+        return false;
+    }
+    monoToggleVersion_.fetch_add(1, std::memory_order_acq_rel);
+    SetEvent(wakeEvent_);
+    return true;
+}
+
 void NativeAudioController::Run()
 {
     if (FAILED(CoInitializeEx(nullptr, COINIT_MULTITHREADED)))
@@ -1697,6 +1813,19 @@ void NativeAudioController::Run()
             const auto slot = pendingDefaultSlot_.load(std::memory_order_acquire);
             const auto changed = impl_->ApplyDefaultEndpoint(slot);
             impl_->appliedDefaultVersion = defaultVersion;
+            if (changed)
+            {
+                sessionChangePending_.store(true, std::memory_order_release);
+            }
+        }
+
+        const auto monoToggleVersion = monoToggleVersion_.load(std::memory_order_acquire);
+        if (monoToggleVersion != impl_->appliedMonoToggleVersion)
+        {
+            bool current = false;
+            const auto read = impl_->monoAudioSetting.Get(current);
+            const auto changed = read && impl_->monoAudioSetting.Set(!current);
+            impl_->appliedMonoToggleVersion = monoToggleVersion;
             if (changed)
             {
                 sessionChangePending_.store(true, std::memory_order_release);
