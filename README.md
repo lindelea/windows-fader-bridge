@@ -5,6 +5,24 @@ Windows per-application volume mixer. It exposes a device-independent mixer
 model through the native EUCON 2026.4 SDK; the Avid S3 and Avid Control are the
 first validation surfaces. iCON P1-Nano/Mackie Control support is also planned.
 
+## Screenshots
+
+### Windows application
+
+![Windows Fader Bridge status window](docs/images/windows-fader-bridge-app.png)
+
+### Assignable commands in EuControl
+
+![Windows Fader Bridge command categories in the EuControl Soft Key Command Editor](docs/images/eucontrol-command-assignment.png)
+
+### EUCON surface in use
+
+![Windows audio applications and devices controlled from a EUCON surface](docs/images/eucon-surface-in-use.jpeg)
+
+The pictured surface is validation hardware, not a device-specific dependency.
+Windows Fader Bridge publishes a device-independent EUCON application model and
+leaves surface discovery, assignment and banking to the Avid EUCON runtime.
+
 ## Current application
 
 `src/FaderBridge.EuconHost` is a native x64 EUCON application. It currently

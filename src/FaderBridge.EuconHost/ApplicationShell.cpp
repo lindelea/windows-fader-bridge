@@ -492,7 +492,7 @@ void ApplicationShell::LayoutControls()
         SWP_NOACTIVATE | SWP_NOZORDER);
     SetWindowPos(hideButton_, nullptr,
         client.right - margin - cardInset - Scale(window_, 140),
-        settingsTop + (settingsBottom - settingsTop - hideButtonHeight) / 2,
+        settingsBottom - cardInset - hideButtonHeight,
         Scale(window_, 140), hideButtonHeight,
         SWP_NOACTIVATE | SWP_NOZORDER);
     const auto pageButtonSize = Scale(window_, 30);
