@@ -32,11 +32,14 @@ struct SurfaceChange
 class FaderBridgeNode final : public EuNode
 {
 public:
+    explicit FaderBridgeNode(HWND notificationWindow) : notificationWindow_(notificationWindow) {}
     void OnCallback(tEVT eventType, void* hidden, void* shown, void*, int&) override;
     bool ConsumeRefreshRequest() noexcept { return refreshRequested_.exchange(false); }
 
 private:
+    HWND notificationWindow_ = nullptr;
     std::atomic<bool> refreshRequested_ = true;
+    std::atomic<unsigned long long> attentionSuppressedUntil_ = 0ULL;
 };
 
 class EuconHost final
@@ -63,6 +66,8 @@ private:
         bool mutePending = false;
         bool isDefault = false;
         bool soloed = false;
+        bool selected = false;
+        bool focusable = false;
         int trackType = 0;
         float volume = 0.0F;
         float peakDb = -120.0F;
@@ -72,6 +77,9 @@ private:
         bool motorDispatchPending = false;
         float pendingMotorVolume = 0.0F;
         std::wstring name;
+        std::vector<DWORD> focusProcessIds;
+        std::wstring focusExecutablePath;
+        std::wstring focusPackageFamilyName;
         std::chrono::steady_clock::time_point volumeHoldUntil{};
         std::chrono::steady_clock::time_point muteHoldUntil{};
     };
@@ -99,6 +107,7 @@ private:
     std::vector<std::unique_ptr<TrackState>> tracks_;
     std::unique_ptr<NativeAudioController> audioController_;
     bool motorFlushTimerActive_ = false;
+    std::wstring selectedTrackKey_;
 
     TrackState* FindTrack(const std::wstring& key) noexcept;
     void SetFaderFromWindows(TrackState& track, float volume);
@@ -106,4 +115,6 @@ private:
     std::unique_ptr<TrackState> CreateTrack(int channelOrder,
         const AudioStripState& strip);
     void ReconcileChannelTopology(const AudioFrame& frame);
+    bool SelectAndFocusTrack(TrackState& track);
+    bool DeselectAndMinimizeTrack(TrackState& track);
 };

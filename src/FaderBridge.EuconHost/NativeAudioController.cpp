@@ -615,6 +615,8 @@ std::wstring PackageDisplayName(const std::wstring& packageFullName,
 struct ProcessMetadata
 {
     std::wstring name;
+    std::wstring executablePath;
+    std::wstring packageFamilyName;
     std::uint32_t channelColor = AudioStripState::NoChannelColor;
 };
 
@@ -871,6 +873,23 @@ ProcessMetadata ProcessInformation(const DWORD processId)
     if (QueryFullProcessImageNameW(process, 0, path.data(), &length))
     {
         executablePath.assign(path.data(), length);
+        result.executablePath = executablePath;
+        UINT32 familyLength = 0;
+        if (GetPackageFamilyName(process, &familyLength, nullptr) ==
+                ERROR_INSUFFICIENT_BUFFER && familyLength > 1U)
+        {
+            result.packageFamilyName.resize(familyLength);
+            if (GetPackageFamilyName(process, &familyLength,
+                    result.packageFamilyName.data()) == ERROR_SUCCESS)
+            {
+                result.packageFamilyName.resize(
+                    familyLength > 0U ? familyLength - 1U : 0U);
+            }
+            else
+            {
+                result.packageFamilyName.clear();
+            }
+        }
         UINT32 packageLength = 0;
         if (GetPackageFullName(process, &packageLength, nullptr) == ERROR_INSUFFICIENT_BUFFER &&
             packageLength > 1U)
@@ -948,6 +967,8 @@ struct NativeAudioController::Impl
     {
         std::wstring key;
         std::wstring name;
+        std::wstring focusExecutablePath;
+        std::wstring focusPackageFamilyName;
         std::uint32_t channelColor = AudioStripState::NoChannelColor;
         std::vector<Session> sessions;
     };
@@ -958,6 +979,8 @@ struct NativeAudioController::Impl
         std::wstring key;
         std::wstring name;
         std::wstring endpointId;
+        std::wstring focusExecutablePath;
+        std::wstring focusPackageFamilyName;
         std::uint32_t channelColor = AudioStripState::NoChannelColor;
         std::vector<AudioMeterRole> meterRoles;
         std::vector<Session> sessions;
@@ -1259,6 +1282,14 @@ struct NativeAudioController::Impl
             auto& app = applications[key];
             app.key = key;
             app.name = process.name;
+            if (app.focusExecutablePath.empty())
+            {
+                app.focusExecutablePath = process.executablePath;
+            }
+            if (app.focusPackageFamilyName.empty())
+            {
+                app.focusPackageFamilyName = process.packageFamilyName;
+            }
             if (app.channelColor == AudioStripState::NoChannelColor)
             {
                 app.channelColor = process.channelColor;
@@ -1281,6 +1312,8 @@ struct NativeAudioController::Impl
             {
                 slot.name = found->second.name;
                 slot.channelColor = found->second.channelColor;
+                slot.focusExecutablePath = found->second.focusExecutablePath;
+                slot.focusPackageFamilyName = found->second.focusPackageFamilyName;
                 auto refreshedSessions = std::move(found->second.sessions);
                 for (auto& refreshed : refreshedSessions)
                 {
@@ -1336,6 +1369,8 @@ struct NativeAudioController::Impl
             empty->key = key;
             empty->name = application.name;
             empty->channelColor = application.channelColor;
+            empty->focusExecutablePath = std::move(application.focusExecutablePath);
+            empty->focusPackageFamilyName = std::move(application.focusPackageFamilyName);
             empty->sessions = std::move(application.sessions);
             for (auto& session : empty->sessions)
             {
@@ -1767,6 +1802,20 @@ struct NativeAudioController::Impl
                 ? (slot.isDefault ? AudioStripRole::MasterOutput : AudioStripRole::OutputDevice)
                 : slot.kind == SlotKind::CaptureEndpoint ? AudioStripRole::InputDevice
                 : AudioStripRole::Application;
+            if (slot.kind == SlotKind::Application)
+            {
+                strip.focusExecutablePath = slot.focusExecutablePath;
+                strip.focusPackageFamilyName = slot.focusPackageFamilyName;
+                strip.focusProcessIds.reserve(slot.sessions.size());
+                for (const auto& session : slot.sessions)
+                {
+                    if (std::find(strip.focusProcessIds.begin(), strip.focusProcessIds.end(),
+                            session.processId) == strip.focusProcessIds.end())
+                    {
+                        strip.focusProcessIds.push_back(session.processId);
+                    }
+                }
+            }
             if (strip.active)
             {
                 if (endpointSlot)

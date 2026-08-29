@@ -194,6 +194,36 @@ stereo/mono display. The ordinary primitive write remains an isolated startup
 fallback for the interval in which a track has no valid visibility handle; it
 is not the application model.
 
+## Application Select and attention
+
+Application channels expose the standard `EuLayoutChannel::kNAM_Select` as a
+two-state `kSWITCH_MultiState`. Windows has one foreground application, so the
+adapter gives the switch application-specific intercancel semantics: Select on
+restores and activates the matching application window, while Select off
+minimizes it. Selecting another channel clears the previous Select state without
+minimizing the previous application.
+
+The audio-session process is not assumed to own the visible window. Window
+resolution first matches a session PID, then a package family (for packaged
+applications such as Apple Music), then the executable path (for browser audio
+worker processes). Only visible, non-cloaked, non-tool top-level windows are
+eligible. A bounded restore handshake confirms that `IsIconic` is false before
+foreground activation. If the ordinary foreground request is rejected, the UI
+thread temporarily attaches to the existing foreground/target input queues,
+uses the documented top-level activation calls, and immediately detaches; it
+does not synthesize keyboard input or leave the target topmost.
+
+The node also receives the surface-owned `kATRIBID_AttentionedTrackPID`
+attribute documented by the installed SDK. Attention callbacks copy only the
+persistent ID and post work to the Win32 UI thread. Initial attention published
+during surface attachment is suppressed because it is synchronization state,
+not a user request to activate a Windows window.
+
+On 2026-08-29, the user verified application matching, Select LED intercancel,
+activation of obscured windows, repeated minimize/restore, and packaged/Win32
+window handling on the attached S3 setup. Avid Control remains to be explicitly
+regression-tested for this workflow.
+
 ## Current conformance audit
 
 | Area | Status | Notes |
@@ -209,6 +239,7 @@ is not the application model.
 | Default endpoint selection | Verified | Active render/capture endpoints retain stable Processor identity. Rec is a one-shot request, Windows default state owns its LED, and Console/Multimedia/Communications roles switch together. Capture selection and reverse synchronization were verified on Windows 11 with S3. |
 | Windows mono command | Verified on S3 | A standards-based assignable command queues the Windows setting handler and Windows state owns its LED. Clear Solo press/LED and real mono processing were verified; Mix to Mons is fixed and unavailable for assignment. Avid Control remains to be tested. |
 | Application Solo / Clear Solo | Verified | Application channels use standard Solo semantics; the Windows worker performs single-target intercancel muting and restores the pre-Solo mute snapshot. The standard System Clear Solo and an assignable command share authoritative state and LED feedback. Endpoint channels are excluded. |
+| Select / Attention | Verified on S3 | Standard channel Select drives one-of-N Windows application activation; off minimizes the selected application. Surface-owned AttentionedTrackPID is consumed on the UI thread. PID, package-family, and executable matching cover helper/worker processes without device-specific code. |
 | Volume knob semantics | Needs work | Volume currently borrows the predefined Input knob-set layout. Confirm the correct standard model or use an official knob-map strategy. |
 | Meter API 3.1 | Verified | Windows supplies true per-leg peaks and endpoint channel roles. Tracks declare dynamic stereo/mono formats, save `VisibilityChangedV2` handles, and use `EuBatchedMeterWriter`; observed batched calls returned success. The ordinary write is isolated to startup/no-handle compatibility. |
 | Device-derived behavior | Needs review | Forced refresh and overtravel rebound came from hardware testing. Classify them as generic application policy or remove them after cross-surface tests. |

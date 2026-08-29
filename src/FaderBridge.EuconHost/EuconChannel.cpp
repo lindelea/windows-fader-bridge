@@ -63,7 +63,8 @@ EuconChannel::EuconChannel(const int channelOrder, const NEuCon::int32 channelCo
     const std::wstring& persistenceId,
     const std::wstring& displayName, ChangeHandler faderHandler,
     ChangeHandler knobHandler, ChangeHandler muteHandler,
-    ChangeHandler soloHandler, ChangeHandler recordArmHandler,
+    ChangeHandler soloHandler, ChangeHandler selectHandler,
+    ChangeHandler recordArmHandler,
     const NEuCon::int32 trackType,
     const std::wstring& channelType)
     : channelOrder_(channelOrder),
@@ -71,6 +72,7 @@ EuconChannel::EuconChannel(const int channelOrder, const NEuCon::int32 channelCo
       knobHandler_(std::move(knobHandler)),
       muteHandler_(std::move(muteHandler)),
       soloHandler_(std::move(soloHandler)),
+      selectHandler_(std::move(selectHandler)),
       recordArmHandler_(std::move(recordArmHandler)),
       fader_(this), name_(this), number_(this), meter_(this), knobSet_(this), knob_(this)
 {
@@ -94,6 +96,10 @@ EuconChannel::EuconChannel(const int channelOrder, const NEuCon::int32 channelCo
     {
         InitializeSolo();
     }
+    if (selectHandler_)
+    {
+        InitializeSelect();
+    }
     if (recordArmHandler_)
     {
         InitializeRecordArm();
@@ -106,6 +112,11 @@ EuconChannel::~EuconChannel()
     {
         RemoveControl(*solo_);
         solo_.reset();
+    }
+    if (select_)
+    {
+        RemoveControl(*select_);
+        select_.reset();
     }
     if (recordArm_)
     {
@@ -141,6 +152,29 @@ void EuconChannel::InitializeSolo()
     }
     solo_->SetLedOverride(true);
     AddControl(*solo_);
+}
+
+void EuconChannel::InitializeSelect()
+{
+    // Getting Started with EuCon 12.5 and the current EuConApp pattern:
+    // channel Select is a standard two-state MultiState switch. Windows has
+    // one foreground application, so the host applies an intercancel policy
+    // and sends the authoritative state back after each surface press.
+    select_ = std::make_unique<EuControlSwitch>(this);
+    select_->SetId(SelectId);
+    select_->SetAttribute(kATRIBID_LayoutName0, EuLayoutChannel::kNAM_Select);
+    EuPrimitiveControl* primitive = nullptr;
+    if (select_->GetPrimitive(EuControlSwitch::kID_Switch, &primitive) == kERR_OK &&
+        primitive)
+    {
+        primitive->Initialize(kTYP_Int, 2U);
+        primitive->LoadValueTableInterpolated(0, 1);
+        if (auto* switchPrimitive = dynamic_cast<EuPrimitiveSwitch*>(primitive))
+        {
+            switchPrimitive->SetSwitchMode(kSWITCH_MultiState);
+        }
+    }
+    AddControl(*select_);
 }
 
 void EuconChannel::InitializeRecordArm()
@@ -401,6 +435,21 @@ void EuconChannel::SetSoloed(const bool soloed)
     }
 }
 
+void EuconChannel::SetSelected(const bool selected)
+{
+    if (!select_)
+    {
+        return;
+    }
+    EuPrimitiveControl* primitive = nullptr;
+    if (select_->GetPrimitive(EuControlSwitch::kID_Switch, &primitive) == kERR_OK &&
+        primitive)
+    {
+        primitive->SetCurrentValue(selected ? 1 : 0);
+        primitive->Refresh();
+    }
+}
+
 void EuconChannel::SetRecordArmed(const bool armed)
 {
     if (!recordArm_)
@@ -634,6 +683,16 @@ void EuconChannel::OnPrimitiveCallback(const tEVT eventType, NEuCon::uint32,
         FB_TRACE("SOLO_EVT track=%d state=%d index=%u", channelOrder_.load(), value,
             static_cast<unsigned>(newValueIndex));
         soloHandler_(static_cast<float>(value), newValueIndex,
+            static_cast<float>(value));
+    }
+    else if (controlId == SelectId && primitiveId == EuControlSwitch::kID_Switch &&
+        selectHandler_)
+    {
+        NEuCon::int32 value = 0;
+        affectedPrimitive->GetValueAt(newValueIndex, value);
+        FB_TRACE("SELECT_EVT track=%d state=%d index=%u", channelOrder_.load(), value,
+            static_cast<unsigned>(newValueIndex));
+        selectHandler_(static_cast<float>(value), newValueIndex,
             static_cast<float>(value));
     }
     else if (controlId == KnobSetId && arrayMemberControlId == knobMemberId_ &&

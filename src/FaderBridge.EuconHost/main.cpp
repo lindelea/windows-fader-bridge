@@ -34,6 +34,9 @@ const wchar_t* ChangeKindName(const int kind)
     case 1: return L"Knob";
     case 2: return L"Mute";
     case 3: return L"Default device";
+    case 4: return L"Solo";
+    case 5: return L"Select";
+    case 6: return L"Attention";
     default: return L"Unknown";
     }
 }
@@ -91,7 +94,7 @@ void PaintWindow(const HWND window)
         text << L"Last EUCON surface: CH" << (g_lastChannel + 1) << L" "
              << ChangeKindName(g_lastKind) << L"    raw index " << g_lastRawIndex
              << L"    table value ";
-        if (g_lastKind == 2 || g_lastKind == 3)
+        if (g_lastKind >= 2 && g_lastKind <= 6)
         {
             text << (g_lastRawTableValue == 0.0F ? L"Off" : L"On");
         }
@@ -154,7 +157,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         // Update the title before the command write so raw hardware feedback is
         // never delayed by Windows audio-session work.
         g_lastCommandSent = g_host->HandleSurfaceChange(*change);
-        if (g_lastKind == 2 || g_lastKind == 3)
+        if (g_lastKind >= 2 && g_lastKind <= 6)
         {
             InvalidateRect(window, nullptr, FALSE);
         }

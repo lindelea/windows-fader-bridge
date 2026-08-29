@@ -1,4 +1,6 @@
 #include <Windows.h>
+#include <appmodel.h>
+#include <dwmapi.h>
 
 #include "EuconHost.h"
 
@@ -12,6 +14,7 @@
 #include "WindowsSystemProcessor.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <string>
 
@@ -109,6 +112,225 @@ std::vector<NEuCon::uint32> EuconMeterRoles(const AudioStripState& strip)
         roles.push_back(kMTR_Mono);
     }
     return roles;
+}
+
+bool EqualIdentity(const std::wstring& left, const std::wstring& right)
+{
+    return !left.empty() && !right.empty() && _wcsicmp(left.c_str(), right.c_str()) == 0;
+}
+
+struct WindowIdentity
+{
+    std::wstring executablePath;
+    std::wstring packageFamilyName;
+};
+
+WindowIdentity GetWindowProcessIdentity(const DWORD processId)
+{
+    WindowIdentity result;
+    const auto process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, processId);
+    if (!process)
+    {
+        return result;
+    }
+
+    std::array<wchar_t, 32768> path{};
+    DWORD pathLength = static_cast<DWORD>(path.size());
+    if (QueryFullProcessImageNameW(process, 0, path.data(), &pathLength))
+    {
+        result.executablePath.assign(path.data(), pathLength);
+    }
+
+    UINT32 familyLength = 0U;
+    if (GetPackageFamilyName(process, &familyLength, nullptr) == ERROR_INSUFFICIENT_BUFFER &&
+        familyLength > 1U)
+    {
+        result.packageFamilyName.resize(familyLength);
+        if (GetPackageFamilyName(process, &familyLength,
+                result.packageFamilyName.data()) == ERROR_SUCCESS)
+        {
+            result.packageFamilyName.resize(familyLength - 1U);
+        }
+        else
+        {
+            result.packageFamilyName.clear();
+        }
+    }
+    CloseHandle(process);
+    return result;
+}
+
+struct WindowSearch
+{
+    const std::vector<DWORD>* processIds = nullptr;
+    const std::wstring* executablePath = nullptr;
+    const std::wstring* packageFamilyName = nullptr;
+    HWND bestWindow = nullptr;
+    DWORD bestProcessId = 0U;
+    int bestScore = 0;
+};
+
+BOOL CALLBACK FindApplicationWindow(const HWND window, const LPARAM parameter)
+{
+    auto& search = *reinterpret_cast<WindowSearch*>(parameter);
+    if (!IsWindowVisible(window) || GetWindow(window, GW_OWNER) != nullptr ||
+        (GetWindowLongPtrW(window, GWL_EXSTYLE) & WS_EX_TOOLWINDOW) != 0 ||
+        GetWindowTextLengthW(window) == 0)
+    {
+        return TRUE;
+    }
+
+    DWORD cloaked = 0U;
+    if (SUCCEEDED(DwmGetWindowAttribute(window, DWMWA_CLOAKED, &cloaked,
+            sizeof(cloaked))) && cloaked != 0U)
+    {
+        return TRUE;
+    }
+
+    DWORD processId = 0U;
+    GetWindowThreadProcessId(window, &processId);
+    if (processId == 0U)
+    {
+        return TRUE;
+    }
+
+    int score = 0;
+    if (search.processIds && std::find(search.processIds->begin(), search.processIds->end(),
+            processId) != search.processIds->end())
+    {
+        score = 300;
+    }
+    else
+    {
+        const auto identity = GetWindowProcessIdentity(processId);
+        if (search.packageFamilyName &&
+            EqualIdentity(identity.packageFamilyName, *search.packageFamilyName))
+        {
+            score = 200;
+        }
+        else if (search.executablePath &&
+            EqualIdentity(identity.executablePath, *search.executablePath))
+        {
+            score = 100;
+        }
+    }
+    if (score > search.bestScore)
+    {
+        search.bestWindow = window;
+        search.bestProcessId = processId;
+        search.bestScore = score;
+    }
+    return TRUE;
+}
+
+WindowSearch FindBestApplicationWindow(const std::vector<DWORD>& processIds,
+    const std::wstring& executablePath, const std::wstring& packageFamilyName)
+{
+    WindowSearch search{ &processIds, &executablePath, &packageFamilyName };
+    EnumWindows(FindApplicationWindow, reinterpret_cast<LPARAM>(&search));
+    return search;
+}
+
+bool BringApplicationWindowToFront(const std::vector<DWORD>& processIds,
+    const std::wstring& executablePath, const std::wstring& packageFamilyName)
+{
+    const auto search = FindBestApplicationWindow(
+        processIds, executablePath, packageFamilyName);
+    if (!search.bestWindow)
+    {
+        FB_TRACE("WINDOW_FOCUS no_match=1 pids=%u package=%d executable=%d",
+            static_cast<unsigned>(processIds.size()), packageFamilyName.empty() ? 0 : 1,
+            executablePath.empty() ? 0 : 1);
+        return false;
+    }
+
+    const auto wasIconic = IsIconic(search.bestWindow) != FALSE;
+    bool restoreMessageHandled = false;
+    if (wasIconic)
+    {
+        // ShowWindowAsync only queues the restore. Activating immediately can
+        // report success while the target is still iconic, which made every
+        // other Select press appear to fail. Give the target a bounded chance
+        // to process SC_RESTORE, retain the async call as a fallback, and do
+        // not proceed to activation until the state transition is observable.
+        DWORD_PTR restoreResult = 0U;
+        restoreMessageHandled = SendMessageTimeoutW(search.bestWindow,
+            WM_SYSCOMMAND, SC_RESTORE, 0,
+            SMTO_ABORTIFHUNG | SMTO_BLOCK, 120U, &restoreResult) != 0;
+        ShowWindowAsync(search.bestWindow, SW_RESTORE);
+        for (int attempt = 0; attempt < 20 && IsIconic(search.bestWindow); ++attempt)
+        {
+            Sleep(5U);
+        }
+    }
+    const auto iconicAfterRestore = IsIconic(search.bestWindow) != FALSE;
+    const auto positioned = SetWindowPos(search.bestWindow, HWND_TOP, 0, 0, 0, 0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+    auto foreground = SetForegroundWindow(search.bestWindow);
+    bool attachedForeground = false;
+    bool attachedTarget = false;
+    if (!foreground)
+    {
+        // SetForegroundWindow is intentionally restricted by Windows. A
+        // surface press is not a Win32 input event, so temporarily share the
+        // current foreground input queue, retry the documented top/activate
+        // calls, and immediately detach. No keyboard event is synthesized.
+        const auto currentThread = GetCurrentThreadId();
+        const auto foregroundWindow = GetForegroundWindow();
+        const auto foregroundThread = foregroundWindow
+            ? GetWindowThreadProcessId(foregroundWindow, nullptr) : 0U;
+        const auto targetThread = GetWindowThreadProcessId(search.bestWindow, nullptr);
+        if (foregroundThread != 0U && foregroundThread != currentThread)
+        {
+            attachedForeground =
+                AttachThreadInput(currentThread, foregroundThread, TRUE) != FALSE;
+        }
+        if (targetThread != 0U && targetThread != currentThread &&
+            targetThread != foregroundThread)
+        {
+            attachedTarget = AttachThreadInput(currentThread, targetThread, TRUE) != FALSE;
+        }
+        BringWindowToTop(search.bestWindow);
+        foreground = SetForegroundWindow(search.bestWindow);
+        if (attachedTarget)
+        {
+            AttachThreadInput(currentThread, targetThread, FALSE);
+        }
+        if (attachedForeground)
+        {
+            AttachThreadInput(currentThread, foregroundThread, FALSE);
+        }
+    }
+    if (!foreground)
+    {
+        FLASHWINFO flash{ sizeof(flash), search.bestWindow,
+            FLASHW_TRAY | FLASHW_TIMERNOFG, 3U, 0U };
+        FlashWindowEx(&flash);
+    }
+    FB_TRACE("WINDOW_FOCUS hwnd=%p pid=%lu score=%d wasIconic=%d restoreSync=%d iconicAfter=%d positioned=%d foreground=%d attachFg=%d attachTarget=%d",
+        search.bestWindow, static_cast<unsigned long>(search.bestProcessId), search.bestScore,
+        wasIconic ? 1 : 0, restoreMessageHandled ? 1 : 0,
+        iconicAfterRestore ? 1 : 0, positioned ? 1 : 0, foreground ? 1 : 0,
+        attachedForeground ? 1 : 0, attachedTarget ? 1 : 0);
+    return !iconicAfterRestore && foreground != FALSE;
+}
+
+bool MinimizeApplicationWindow(const std::vector<DWORD>& processIds,
+    const std::wstring& executablePath, const std::wstring& packageFamilyName)
+{
+    const auto search = FindBestApplicationWindow(
+        processIds, executablePath, packageFamilyName);
+    if (!search.bestWindow)
+    {
+        FB_TRACE("WINDOW_MINIMIZE no_match=1 pids=%u",
+            static_cast<unsigned>(processIds.size()));
+        return false;
+    }
+    const auto started = ShowWindowAsync(search.bestWindow, SW_MINIMIZE);
+    FB_TRACE("WINDOW_MINIMIZE hwnd=%p pid=%lu score=%d started=%d",
+        search.bestWindow, static_cast<unsigned long>(search.bestProcessId), search.bestScore,
+        started ? 1 : 0);
+    return started != FALSE;
 }
 
 template<typename TDataVector>
@@ -245,10 +467,13 @@ std::unique_ptr<EuconHost::TrackState> EuconHost::CreateTrack(const int channelO
         : static_cast<NEuCon::int32>(strip.channelColor & 0x00FFFFFFU);
     EuconChannel::ChangeHandler recordArmHandler;
     EuconChannel::ChangeHandler soloHandler;
+    EuconChannel::ChangeHandler selectHandler;
     if (strip.role == AudioStripRole::Application)
     {
         soloHandler = [report](const float value, const NEuCon::uint16 rawIndex,
             const float rawValue) { report(value, 4, rawIndex, rawValue); };
+        selectHandler = [report](const float value, const NEuCon::uint16 rawIndex,
+            const float rawValue) { report(value, 5, rawIndex, rawValue); };
     }
     if (strip.defaultSelectable)
     {
@@ -263,13 +488,20 @@ std::unique_ptr<EuconHost::TrackState> EuconHost::CreateTrack(const int channelO
             const float rawValue) { report(value, 1, rawIndex, rawValue); },
         [report](const float value, const NEuCon::uint16 rawIndex,
             const float rawValue) { report(value, 2, rawIndex, rawValue); },
-        std::move(soloHandler), std::move(recordArmHandler), EuconTrackType(strip.role),
+        std::move(soloHandler), std::move(selectHandler), std::move(recordArmHandler),
+        EuconTrackType(strip.role),
         strip.sortGroup == 0 ? L"Output" : strip.sortGroup == 1 ? L"Input" : L"Audio");
     track->channel->SetMuted(false);
     track->channel->SetSoloed(strip.soloed);
+    track->channel->SetSelected(strip.key == selectedTrackKey_);
     track->channel->SetRecordArmed(strip.isDefault);
     track->cache.isDefault = strip.isDefault;
     track->cache.trackType = EuconTrackType(strip.role);
+    track->cache.selected = strip.key == selectedTrackKey_;
+    track->cache.focusable = strip.role == AudioStripRole::Application;
+    track->cache.focusProcessIds = strip.focusProcessIds;
+    track->cache.focusExecutablePath = strip.focusExecutablePath;
+    track->cache.focusPackageFamilyName = strip.focusPackageFamilyName;
     return track;
 }
 
@@ -330,6 +562,10 @@ void EuconHost::ReconcileChannelTopology(const AudioFrame& frame)
             [&iterator](const auto* strip) { return strip->key == (*iterator)->key; });
         if (!stillPresent)
         {
+            if ((*iterator)->key == selectedTrackKey_)
+            {
+                selectedTrackKey_.clear();
+            }
             (*iterator)->route->audioSlot.store(-1, std::memory_order_release);
             FB_TRACE("EUCON_TRACK_REMOVE order=%d",
                 (*iterator)->route->channelOrder.load());
@@ -383,7 +619,34 @@ void EuconHost::ReconcileChannelTopology(const AudioFrame& frame)
 
 void FaderBridgeNode::OnCallback(const tEVT eventType, void* hidden, void* shown, void*, int&)
 {
-    if (eventType == kEVT_NODE_VisibilityChangedV2)
+    if (eventType == kEVT_AttributeChange)
+    {
+        const auto* change = reinterpret_cast<const AttributeChangeData*>(hidden);
+        if (change && change->mEventType == kEVT_AttributeChange &&
+            change->mAttributeKeyType == kATRIB_KEYTYPE_Int &&
+            change->mIntAttributeKey == kATRIBID_AttentionedTrackPID &&
+            change->mAttributeValueType == kATRIB_VALUETYPE_String &&
+            !change->mStringAttributeValue.empty())
+        {
+            if (GetTickCount64() < attentionSuppressedUntil_.load())
+            {
+                FB_TRACE("ATTENTION_EVT suppressed=surface_attach");
+                return;
+            }
+            // The installed header contract says the surface owns this node
+            // attribute. Copy the persistent ID and leave the EUCON callback
+            // immediately; window activation happens on the Win32 host thread.
+            auto surfaceChange = std::make_unique<SurfaceChange>();
+            surfaceChange->kind = 6;
+            surfaceChange->trackKey = change->mStringAttributeValue;
+            if (PostMessageW(notificationWindow_, kSurfaceChangeMessage, 0,
+                    reinterpret_cast<LPARAM>(surfaceChange.get())))
+            {
+                surfaceChange.release();
+            }
+        }
+    }
+    else if (eventType == kEVT_NODE_VisibilityChangedV2)
     {
         ApplyMeterVisibility<NEuCon::tVisChangeDataVectorV2>(hidden, false);
         ApplyMeterVisibility<NEuCon::tVisChangeDataVectorV2>(shown, true);
@@ -396,6 +659,13 @@ void FaderBridgeNode::OnCallback(const tEVT eventType, void* hidden, void* shown
     else if (eventType == kEVT_NODE_SurfaceNodeAdded || eventType == kEVT_NODE_SurfaceNodeRemoved)
     {
         refreshRequested_.store(true);
+        if (eventType == kEVT_NODE_SurfaceNodeAdded)
+        {
+            // A surface announces its existing attention as part of attach.
+            // That is model synchronization, not a user request to activate a
+            // Windows application.
+            attentionSuppressedUntil_.store(GetTickCount64() + 1500ULL);
+        }
     }
 }
 
@@ -413,7 +683,7 @@ EuconHost::EuconHost(const HWND notificationWindow) : notificationWindow_(notifi
         notificationWindow_, kAudioFrameMessage);
     audioController_->Start();
 
-    node_ = std::make_unique<FaderBridgeNode>();
+    node_ = std::make_unique<FaderBridgeNode>(notificationWindow_);
     node_->SetAttribute2(kATRIBID_ProcessorMeterAPIVersion, kMeterAPIVersion_3_1, false);
     node_->Freeze();
     node_->SetPersistenceID(L"FaderBridge.WindowsAudio.2026");
@@ -521,6 +791,10 @@ int EuconHost::ApplyAudioFrame(const AudioFrame& frame)
         auto& cache = track->cache;
         const auto order = track->route->channelOrder.load();
         ++activeCount;
+        cache.focusProcessIds = strip.focusProcessIds;
+        cache.focusExecutablePath = strip.focusExecutablePath;
+        cache.focusPackageFamilyName = strip.focusPackageFamilyName;
+        cache.focusable = strip.role == AudioStripRole::Application;
         channel.ConfigureMeter(frame.monoAudioEnabled, EuconMeterRoles(strip));
         const auto trackType = EuconTrackType(strip.role);
         if (!cache.active || cache.trackType != trackType)
@@ -543,6 +817,12 @@ int EuconHost::ApplyAudioFrame(const AudioFrame& frame)
         {
             channel.SetSoloed(strip.soloed);
             cache.soloed = strip.soloed;
+        }
+        const auto selected = strip.key == selectedTrackKey_;
+        if (!cache.active || fullRefresh || cache.selected != selected)
+        {
+            channel.SetSelected(selected);
+            cache.selected = selected;
         }
 
         const auto volumeMatchesPending = cache.volumePending &&
@@ -621,6 +901,22 @@ bool EuconHost::HandleSurfaceChange(const SurfaceChange& change)
 {
     const auto kind = change.kind;
     const auto value = change.value;
+    if (kind == 6)
+    {
+        // AttentionedTrackPID is a surface-owned node attribute containing a
+        // channel Processor persistence ID, not the Windows application key.
+        const auto attentioned = std::find_if(tracks_.begin(), tracks_.end(),
+            [&change](const auto& candidate)
+            {
+                const auto persistenceId = TrackPersistenceId(candidate->key);
+                return persistenceId == change.trackKey ||
+                    (change.trackKey.size() > persistenceId.size() &&
+                        change.trackKey.compare(change.trackKey.size() - persistenceId.size(),
+                            persistenceId.size(), persistenceId) == 0);
+            });
+        FB_TRACE("ATTENTION_EVT matched=%d", attentioned != tracks_.end() ? 1 : 0);
+        return attentioned != tracks_.end() && SelectAndFocusTrack(**attentioned);
+    }
     auto* track = FindTrack(change.trackKey);
     if (!track)
     {
@@ -688,5 +984,60 @@ bool EuconHost::HandleSurfaceChange(const SurfaceChange& change)
         // enqueue the intercancel operation here, outside EUCON's callback.
         return audioController_ && audioController_->QueueToggleSolo(track->key);
     }
+    if (kind == 5)
+    {
+        // Windows application visibility maps cleanly to the standard two
+        // Select states: on activates/unminimizes; off minimizes.
+        return value != 0.0F
+            ? SelectAndFocusTrack(*track)
+            : DeselectAndMinimizeTrack(*track);
+    }
     return false;
+}
+
+bool EuconHost::SelectAndFocusTrack(TrackState& track)
+{
+    if (!track.cache.focusable)
+    {
+        FB_TRACE("WINDOW_SELECT rejected=non_application track=%d",
+            track.route->channelOrder.load());
+        return false;
+    }
+    selectedTrackKey_ = track.key;
+    for (auto& candidate : tracks_)
+    {
+        const auto selected = candidate.get() == &track;
+        if (candidate->cache.selected != selected)
+        {
+            candidate->channel->SetSelected(selected);
+            candidate->cache.selected = selected;
+        }
+    }
+    FB_TRACE("WINDOW_SELECT track=%d pids=%u package=%d executable=%d",
+        track.route->channelOrder.load(),
+        static_cast<unsigned>(track.cache.focusProcessIds.size()),
+        track.cache.focusPackageFamilyName.empty() ? 0 : 1,
+        track.cache.focusExecutablePath.empty() ? 0 : 1);
+    return BringApplicationWindowToFront(track.cache.focusProcessIds,
+        track.cache.focusExecutablePath, track.cache.focusPackageFamilyName);
+}
+
+bool EuconHost::DeselectAndMinimizeTrack(TrackState& track)
+{
+    if (!track.cache.focusable)
+    {
+        return false;
+    }
+    if (selectedTrackKey_ == track.key)
+    {
+        selectedTrackKey_.clear();
+    }
+    if (track.cache.selected)
+    {
+        track.channel->SetSelected(false);
+        track.cache.selected = false;
+    }
+    FB_TRACE("WINDOW_DESELECT track=%d", track.route->channelOrder.load());
+    return MinimizeApplicationWindow(track.cache.focusProcessIds,
+        track.cache.focusExecutablePath, track.cache.focusPackageFamilyName);
 }

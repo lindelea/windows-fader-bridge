@@ -62,6 +62,12 @@ struct AudioStripState
     std::uint32_t channelColor = NoChannelColor;
     std::wstring key;
     std::wstring name;
+    // Window activation identity is separate from audio-session identity.
+    // Packaged apps and browsers commonly render their top-level window from
+    // a process other than the one that owns the Core Audio session.
+    std::vector<DWORD> focusProcessIds;
+    std::wstring focusExecutablePath;
+    std::wstring focusPackageFamilyName;
 };
 
 struct AudioFrame
