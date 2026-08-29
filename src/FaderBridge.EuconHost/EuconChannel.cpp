@@ -39,10 +39,10 @@ float NormalizedToCoordinate(const float value)
 }
 }
 
-EuconChannel::EuconChannel(const int channelIndex, const std::wstring& persistenceId,
+EuconChannel::EuconChannel(const int channelOrder, const std::wstring& persistenceId,
     const std::wstring& displayName, ChangeHandler faderHandler,
     ChangeHandler knobHandler, ChangeHandler muteHandler)
-    : channelIndex_(channelIndex),
+    : channelOrder_(channelOrder),
       faderHandler_(std::move(faderHandler)),
       knobHandler_(std::move(knobHandler)),
       muteHandler_(std::move(muteHandler)),
@@ -52,13 +52,13 @@ EuconChannel::EuconChannel(const int channelIndex, const std::wstring& persisten
     SetAttribute(kATRIBID_LayoutRule0, kRUL_EuLayoutChannel);
     SetAttribute(kATRIBID_TrackType, kTRACK_Audio);
     SetAttribute(kATRIBID_ChannelType, L"Audio");
-    SetAttribute(kATRIBID_ChannelOrder, channelIndex + 1);
+    SetAttribute(kATRIBID_ChannelOrder, channelOrder);
     SetPersistenceID(persistenceId);
 
     InitializeFader();
     InitializeText(name_, NameId, EuLayoutChannel::kNAM_Name, displayName);
     InitializeText(number_, NumberId, EuLayoutChannel::kNAM_ChannelNumber,
-        std::to_wstring(channelIndex + 1));
+        std::to_wstring(channelOrder));
     InitializeMeter();
     InitializeKnob();
 }
@@ -81,8 +81,8 @@ void EuconChannel::InitializeFader()
     EuPrimitiveControl* primitive = nullptr;
     if (fader_.GetPrimitive(EuControlFader::kID_Slider, &primitive) == kERR_OK && primitive)
     {
-        // Windows 100% maps to 0 dB. CH1 may already hold 0 dB in the
-        // processor model while its physical fader is in the overtravel zone.
+        // Windows 100% maps to 0 dB. The processor may already hold 0 dB while
+        // an assigned physical fader is in the overtravel zone.
         // Allow an unchanged 0 dB index to be resent to the motor.
         primitive->SetAttribute(kATRIBID_OnlySendIfDifferent, 0);
         primitive->Initialize(kTYP_Float, kFaderStepCount);
@@ -103,8 +103,8 @@ void EuconChannel::InitializeFader()
         if (auto* touch = dynamic_cast<EuPrimitiveSwitch*>(primitive))
         {
             // Touch sense is a momentary hardware state, not a toggling button.
-            // It must be initialized explicitly or the S3's touch callbacks are
-            // not dependable.
+            // It must be initialized explicitly for dependable surface touch
+            // callbacks.
             touch->Initialize(kTYP_Int, 2U);
             touch->LoadValueTableInterpolated(0, 1);
             touch->SetSwitchMode(kSWITCH_Raw);
@@ -213,11 +213,10 @@ void EuconChannel::SetFaderNormalized(const float value)
         // contains the 0..+12 dB overtravel region.
         const auto index = static_cast<NEuCon::uint16>(std::lround(
             std::clamp(value, 0.0F, 1.0F) * static_cast<float>(kUnityIndex)));
-        FB_TRACE("MOTOR_CMD ch=%d value=%.4f index=%u", channelIndex_ + 1,
+        FB_TRACE("MOTOR_CMD track=%d value=%.4f index=%u", channelOrder_.load(),
             value, static_cast<unsigned>(index));
         primitive->SetCurrentIndex(index);
-        // CH1 can retain the motor value until another surface event (for
-        // example Sel) flushes the transaction. Force immediate delivery.
+        // Ensure an unchanged target is delivered after an overtravel callback.
         primitive->Refresh();
     }
 }
@@ -229,7 +228,7 @@ void EuconChannel::SetKnobNormalized(const float value)
     {
         const auto index = static_cast<NEuCon::uint16>(std::lround(
             std::clamp(value, 0.0F, 1.0F) * 192.0F));
-        FB_TRACE("KNOB_RING_CMD ch=%d value=%.4f index=%u", channelIndex_ + 1,
+        FB_TRACE("KNOB_RING_CMD track=%d value=%.4f index=%u", channelOrder_.load(),
             value, static_cast<unsigned>(index));
         primitive->SetCurrentIndex(index);
     }
@@ -241,6 +240,25 @@ void EuconChannel::SetName(const std::wstring& value)
     if (name_.GetPrimitive(EuControlTextDisplay::kID_TextDisplay, &primitive) == kERR_OK && primitive)
     {
         primitive->ChangeText(value);
+    }
+}
+
+void EuconChannel::SetOrder(const int channelOrder)
+{
+    if (channelOrder_.exchange(channelOrder) == channelOrder)
+    {
+        return;
+    }
+
+    // Getting Started with EuCon, section 12.4: a channel processor stays
+    // with its track. Reordering changes only ChannelOrder and channel number,
+    // while the owning node is frozen by EuconHost.
+    SetAttribute2(kATRIBID_ChannelOrder, channelOrder, true);
+    EuPrimitiveControl* primitive = nullptr;
+    if (number_.GetPrimitive(EuControlTextDisplay::kID_TextDisplay, &primitive) == kERR_OK &&
+        primitive)
+    {
+        primitive->ChangeText(std::to_wstring(channelOrder));
     }
 }
 
@@ -271,14 +289,21 @@ void EuconChannel::SetMuted(const bool muted)
 
 void EuconChannel::PostRegisterMeterInitialization()
 {
-    meter_.SetAttribute2(kATRIBID_MeterType, kMeterType__SamplePeak, true);
-    SetAttribute2(kATRIBID_MeterType, kMeterType__SamplePeak, true);
-    SetAttribute2(kATRIBID_TrackFormat, kFORMAT_Stereo, true);
+    const auto meterTypeResult = meter_.SetAttribute2(
+        kATRIBID_MeterType, kMeterType__SamplePeak, true);
+    const auto processorMeterTypeResult = SetAttribute2(
+        kATRIBID_MeterType, kMeterType__SamplePeak, true);
+    const auto trackFormatResult = SetAttribute2(kATRIBID_TrackFormat, kFORMAT_Stereo, true);
 
     const auto flags = static_cast<NEuCon::uint32>(
         kEuMFMT_PL_Level | kEuMFMT_PL_Peak | kEuMFMT_PL_Clip |
         kEuMFMT_PM_MasterPeak | kEuMFMT_PM_MasterClip);
-    meter_.SetFormat(EuMakeMeterFormat(2U, flags), { kMTR_Left, kMTR_Right });
+    const auto formatResult = meter_.SetFormat(
+        EuMakeMeterFormat(2U, flags), { kMTR_Left, kMTR_Right });
+    FB_TRACE("METER_SETUP track=%d meterType=%d processorType=%d trackFormat=%d format=%d",
+        channelOrder_.load(), static_cast<int>(meterTypeResult),
+        static_cast<int>(processorMeterTypeResult), static_cast<int>(trackFormatResult),
+        static_cast<int>(formatResult));
 }
 
 void EuconChannel::SetMeterVisibility(const bool visible, const tVisibilityHandle handle,
@@ -288,6 +313,11 @@ void EuconChannel::SetMeterVisibility(const bool visible, const tVisibilityHandl
     meterVisible_ = visible;
     meterVisibilityHandle_ = handle;
     meterFormat_ = format;
+    meterFallbackLogged_.store(false);
+    lastMeterResult_.store(-1);
+    FB_TRACE("METER_VIS track=%d visible=%d handle=%u format=%u",
+        channelOrder_.load(), visible ? 1 : 0, static_cast<unsigned>(handle),
+        static_cast<unsigned>(format));
 }
 
 void EuconChannel::WriteMeterDb(EuBatchedMeterWriter& writer, const float valueDb, const bool clip)
@@ -302,39 +332,48 @@ void EuconChannel::WriteMeterDb(EuBatchedMeterWriter& writer, const float valueD
         format = meterFormat_;
     }
 
-    // EuConApp normally obtains these through VisibilityChangedV2. Recover once
-    // from the meter object if the initial callback raced application startup.
+    // Getting Started with EuCon 13.3.9-13.3.10 requires the application to
+    // use visibility, handle and format saved by the node callback. Do not
+    // query the meter object on this hot path or infer visibility.
     if (!visible || handle == kEuInvalidVisibilityHandle || format == kEuInvalidMeterFormat)
     {
-        std::vector<NEuCon::uint32> roles;
-        if (meter_.GetVisibilityHandle(handle) != kERR_OK ||
-            meter_.GetFormat(format, roles) != kERR_OK ||
-            handle == kEuInvalidVisibilityHandle || format == kEuInvalidMeterFormat)
+        if (!meterFallbackLogged_.exchange(true))
         {
-            // Some EuControl/S3 combinations recognize dynamically rebuilt
-            // processors but do not send VisibilityChangedV2. The ordinary
-            // meter primitive remains supported and was the verified path in
-            // the initial hardware baseline, so keep the LED live while the
-            // 3.1 visibility handle is unavailable.
-            EuPrimitiveControl* primitive = nullptr;
-            if (meter_.GetPrimitive(EuControlMultiMeter::kID_Meter0, &primitive) == kERR_OK &&
-                primitive)
-            {
-                primitive->SetCurrentValue(std::clamp(valueDb, -120.0F, 0.0F));
-                primitive->Refresh();
-            }
-            return;
+            FB_TRACE("METER_FALLBACK track=%d visible=%d handle=%u format=%u",
+                channelOrder_.load(), visible ? 1 : 0, static_cast<unsigned>(handle),
+                static_cast<unsigned>(format));
         }
-        SetMeterVisibility(true, handle, format);
+        // The legacy write is an isolated compatibility fallback while the
+        // missing visibility callback is being investigated. It is never sent
+        // alongside a valid 3.1 batched meter update.
+        EuPrimitiveControl* primitive = nullptr;
+        if (meter_.GetPrimitive(EuControlMultiMeter::kID_Meter0, &primitive) == kERR_OK &&
+            primitive)
+        {
+            primitive->SetCurrentValue(std::clamp(valueDb, -120.0F, 0.0F));
+            primitive->Refresh();
+        }
+        return;
     }
 
     const auto level = std::clamp(valueDb, -120.0F, 12.0F);
     const auto peak = level + 2.0F;
-    writer.SetPerMeterValuesV2(meter_, handle, format, peak, clip);
-    writer.SetPerLegValuesV2(meter_, handle, format, 0U,
+    const auto meterResult = writer.SetPerMeterValuesV2(meter_, handle, format, peak, clip);
+    const auto leftResult = writer.SetPerLegValuesV2(meter_, handle, format, 0U,
         level, peak, kMeter_DefaultValueForContext, clip);
-    writer.SetPerLegValuesV2(meter_, handle, format, 1U,
+    const auto rightResult = writer.SetPerLegValuesV2(meter_, handle, format, 1U,
         level, peak, kMeter_DefaultValueForContext, clip);
+    const auto combinedResult = meterResult != kEUBMR_OK ? meterResult
+        : leftResult != kEUBMR_OK ? leftResult : rightResult;
+    if (lastMeterResult_.exchange(static_cast<int>(combinedResult)) !=
+        static_cast<int>(combinedResult))
+    {
+        FB_TRACE("METER_BATCH track=%d result=%d meter=%d left=%d right=%d handle=%u format=%u",
+            channelOrder_.load(), static_cast<int>(combinedResult),
+            static_cast<int>(meterResult), static_cast<int>(leftResult),
+            static_cast<int>(rightResult), static_cast<unsigned>(handle),
+            static_cast<unsigned>(format));
+    }
 }
 
 void EuconChannel::OnPrimitiveCallback(const tEVT eventType, NEuCon::uint32,
@@ -354,17 +393,17 @@ void EuconChannel::OnPrimitiveCallback(const tEVT eventType, NEuCon::uint32,
         const auto now = MonotonicMilliseconds();
         const auto humanMove = faderTouched_.load(std::memory_order_acquire) ||
             now <= faderTouchReleaseDeadline_.load(std::memory_order_acquire);
-        FB_TRACE("FADER_EVT ch=%d index=%u raw=%.2f touch=%d human=%d", channelIndex_ + 1,
+        FB_TRACE("FADER_EVT track=%d index=%u raw=%.2f touch=%d human=%d", channelOrder_.load(),
             static_cast<unsigned>(newValueIndex), value,
             faderTouched_.load(std::memory_order_acquire) ? 1 : 0, humanMove ? 1 : 0);
         if (humanMove)
         {
-            faderHandler_(channelIndex_, CoordinateToNormalized(value), newValueIndex, value);
+            faderHandler_(CoordinateToNormalized(value), newValueIndex, value);
         }
         if (value > kMaxDb)
         {
             // EUCON invokes this callback on its own thread. Defer motor output
-            // to the host update thread; CH1 can ignore a self-write made here.
+            // to the host update thread and keep SDK output out of this callback.
             faderReboundPending_.store(true);
         }
     }
@@ -373,7 +412,7 @@ void EuconChannel::OnPrimitiveCallback(const tEVT eventType, NEuCon::uint32,
         NEuCon::int32 value = 0;
         affectedPrimitive->GetValueAt(newValueIndex, value);
         const auto touched = value != 0;
-        FB_TRACE("FADER_TOUCH ch=%d state=%d index=%u", channelIndex_ + 1,
+        FB_TRACE("FADER_TOUCH track=%d state=%d index=%u", channelOrder_.load(),
             touched ? 1 : 0, static_cast<unsigned>(newValueIndex));
         faderTouched_.store(touched, std::memory_order_release);
         faderTouchReleaseDeadline_.store(
@@ -390,7 +429,7 @@ void EuconChannel::OnPrimitiveCallback(const tEVT eventType, NEuCon::uint32,
                 value == 0 ? kLEDStatus_Off : kLEDStatus_On));
             led->Refresh();
         }
-        muteHandler_(channelIndex_, static_cast<float>(value), newValueIndex,
+        muteHandler_(static_cast<float>(value), newValueIndex,
             static_cast<float>(value));
     }
     else if (controlId == KnobSetId && arrayMemberControlId == knobMemberId_ &&
@@ -398,16 +437,16 @@ void EuconChannel::OnPrimitiveCallback(const tEVT eventType, NEuCon::uint32,
     {
         NEuCon::float32 value = 0.0F;
         affectedPrimitive->GetValueAt(newValueIndex, value);
-        FB_TRACE("KNOB_EVT ch=%d index=%u raw=%.2f", channelIndex_ + 1,
+        FB_TRACE("KNOB_EVT track=%d index=%u raw=%.2f", channelOrder_.load(),
             static_cast<unsigned>(newValueIndex), value);
-        knobHandler_(channelIndex_, CoordinateToNormalized(value), newValueIndex, value);
+        knobHandler_(CoordinateToNormalized(value), newValueIndex, value);
     }
     else if (controlId == KnobSetId && arrayMemberControlId == knobMemberId_ &&
         primitiveId == EuControlKnobCell::kID_KnobTouchSense)
     {
         NEuCon::int32 value = 0;
         affectedPrimitive->GetValueAt(newValueIndex, value);
-        FB_TRACE("KNOB_TOUCH ch=%d state=%d index=%u", channelIndex_ + 1,
+        FB_TRACE("KNOB_TOUCH track=%d state=%d index=%u", channelOrder_.load(),
             value != 0 ? 1 : 0, static_cast<unsigned>(newValueIndex));
     }
 }

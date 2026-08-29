@@ -70,7 +70,7 @@ void PaintWindow(const HWND window)
     text << L"\r\n";
     if (g_lastChannel >= 0)
     {
-        text << L"Last S3 hardware: CH" << (g_lastChannel + 1) << L" "
+        text << L"Last EUCON surface: CH" << (g_lastChannel + 1) << L" "
              << ChangeKindName(g_lastKind) << L"    raw index " << g_lastRawIndex
              << L"    table value ";
         if (g_lastKind == 2)

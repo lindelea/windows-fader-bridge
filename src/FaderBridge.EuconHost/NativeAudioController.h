@@ -29,7 +29,7 @@ class NativeAudioController final
 {
 public:
     // EUCON surfaces bank over a virtual channel list. This is an internal
-    // safety ceiling, not the number of physical S3 faders.
+    // safety ceiling, not the number of faders on an attached EUCON surface.
     static constexpr int StripCount = 128;
 
     NativeAudioController(HWND notificationWindow, UINT snapshotMessage);

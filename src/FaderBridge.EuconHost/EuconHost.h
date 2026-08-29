@@ -20,6 +20,7 @@ constexpr UINT_PTR kMotorFlushTimerId = 0x4642U;
 struct SurfaceChange
 {
     int channel = 0;
+    std::wstring trackKey;
     int kind = 0;
     float value = 0.0F;
     NEuCon::uint16 rawIndex = 0U;
@@ -71,19 +72,33 @@ private:
         std::chrono::steady_clock::time_point muteHoldUntil{};
     };
 
+    struct TrackRoute
+    {
+        std::atomic<int> audioSlot = -1;
+        std::atomic<int> channelOrder = 0;
+    };
+
+    struct TrackState
+    {
+        std::wstring key;
+        std::shared_ptr<TrackRoute> route;
+        std::unique_ptr<EuconChannel> channel;
+        ChannelCache cache;
+    };
+
     HWND notificationWindow_;
     int initializationError_ = 0;
     bool ready_ = false;
     std::unique_ptr<FaderBridgeNode> node_;
     std::unique_ptr<ExProcessorCommand> commandProcessor_;
-    std::vector<std::unique_ptr<EuconChannel>> channels_;
-    std::array<ChannelCache, MaxChannelCount> cache_{};
+    std::vector<std::unique_ptr<TrackState>> tracks_;
     std::unique_ptr<NativeAudioController> audioController_;
     bool motorFlushTimerActive_ = false;
 
-    void SetFaderFromWindows(int channel, float volume);
-    void ScheduleFaderFromWindows(int channel, float volume);
-    std::unique_ptr<EuconChannel> CreateChannel(int channel, const std::wstring& key,
-        const std::wstring& name);
+    TrackState* FindTrack(const std::wstring& key) noexcept;
+    void SetFaderFromWindows(TrackState& track, float volume);
+    void ScheduleFaderFromWindows(TrackState& track, float volume);
+    std::unique_ptr<TrackState> CreateTrack(int channelOrder, int audioSlot,
+        const std::wstring& key, const std::wstring& name);
     void ReconcileChannelTopology(const AudioFrame& frame);
 };

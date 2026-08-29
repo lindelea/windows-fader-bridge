@@ -235,7 +235,7 @@ std::wstring ProcessName(const DWORD processId)
     {
         // CoreAudio can retain an inactive session briefly after its owning
         // browser/helper process has exited. It is not a controllable app and
-        // must not consume its own S3 strip.
+        // must not consume its own EUCON channel strip.
         return {};
     }
 
