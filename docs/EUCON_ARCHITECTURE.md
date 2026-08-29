@@ -74,6 +74,14 @@ drives every Rec LED. Default state never participates in channel ordering.
 The endpoint ID keeps the same Processor, layouts, direct assignments, and
 banked identity stable when the default changes.
 
+Every active capture endpoint maintains its own lightweight shared-mode WASAPI
+capture stream when the endpoint has no hardware peak meter. The worker drains
+and discards capture packets only to keep Windows' software endpoint meter
+active; audio data is never retained. Consequently, every enabled input track
+meters independently whether or not it is the default capture endpoint. This
+was verified with two simultaneous capture endpoints on 2026-08-29. Default
+selection remains exclusively Rec/LED state and never gates metering.
+
 Endpoint enumeration, volume, mute, metering, and default-change notification
 use documented Windows Core Audio interfaces. Microsoft does not publish a
 desktop API for changing the default endpoint. That write is isolated behind

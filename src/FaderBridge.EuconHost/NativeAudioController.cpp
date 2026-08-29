@@ -744,6 +744,9 @@ struct NativeAudioController::Impl
         ComPtr<IMMDevice> endpointDevice;
         ComPtr<IAudioEndpointVolume> endpointVolume;
         ComPtr<IAudioMeterInformation> endpointMeter;
+        ComPtr<IAudioClient> captureMeterClient;
+        ComPtr<IAudioCaptureClient> captureMeterReader;
+        bool captureMeterOpenAttempted = false;
         bool isDefault = false;
         std::wstring preferredVolumeSession;
         std::wstring preferredMuteSession;
@@ -800,6 +803,102 @@ struct NativeAudioController::Impl
         if (SUCCEEDED(session.control->RegisterAudioSessionNotification(events.Get())))
         {
             session.events = std::move(events);
+        }
+    }
+
+    void EnsureCaptureMeterStream(Slot& slot) const
+    {
+        if (slot.kind != SlotKind::CaptureEndpoint || slot.captureMeterOpenAttempted)
+        {
+            return;
+        }
+        slot.captureMeterOpenAttempted = true;
+
+        DWORD hardwareSupport = 0;
+        if (slot.endpointMeter &&
+            SUCCEEDED(slot.endpointMeter->QueryHardwareSupport(&hardwareSupport)) &&
+            (hardwareSupport & ENDPOINT_HARDWARE_SUPPORT_METER) != 0)
+        {
+            FB_TRACE("CAPTURE_METER_READY mode=hardware");
+            return;
+        }
+
+        ComPtr<IAudioClient> client;
+        auto result = slot.endpointDevice
+            ? slot.endpointDevice->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr,
+                reinterpret_cast<void**>(client.GetAddressOf()))
+            : E_POINTER;
+        WAVEFORMATEX* mixFormat = nullptr;
+        if (SUCCEEDED(result))
+        {
+            result = client->GetMixFormat(&mixFormat);
+        }
+        if (SUCCEEDED(result))
+        {
+            constexpr REFERENCE_TIME kCaptureBufferDuration = 1000000; // 100 ms
+            result = client->Initialize(AUDCLNT_SHAREMODE_SHARED,
+                AUDCLNT_STREAMFLAGS_NOPERSIST, kCaptureBufferDuration, 0,
+                mixFormat, nullptr);
+        }
+        if (mixFormat)
+        {
+            CoTaskMemFree(mixFormat);
+        }
+
+        ComPtr<IAudioCaptureClient> reader;
+        if (SUCCEEDED(result))
+        {
+            result = client->GetService(IID_PPV_ARGS(&reader));
+        }
+        if (SUCCEEDED(result))
+        {
+            result = client->Start();
+        }
+        if (SUCCEEDED(result))
+        {
+            slot.captureMeterClient = std::move(client);
+            slot.captureMeterReader = std::move(reader);
+        }
+        FB_TRACE("CAPTURE_METER_OPEN mode=shared hr=%08X active=%d",
+            static_cast<unsigned>(result), slot.captureMeterReader ? 1 : 0);
+    }
+
+    void DrainCaptureMeterStream(Slot& slot) const
+    {
+        if (!slot.captureMeterReader)
+        {
+            return;
+        }
+
+        UINT32 packetFrames = 0;
+        auto result = slot.captureMeterReader->GetNextPacketSize(&packetFrames);
+        for (int packet = 0; SUCCEEDED(result) && packetFrames > 0 && packet < 64; ++packet)
+        {
+            BYTE* data = nullptr;
+            UINT32 frames = 0;
+            DWORD flags = 0;
+            result = slot.captureMeterReader->GetBuffer(
+                &data, &frames, &flags, nullptr, nullptr);
+            if (FAILED(result))
+            {
+                break;
+            }
+            result = slot.captureMeterReader->ReleaseBuffer(frames);
+            if (SUCCEEDED(result))
+            {
+                result = slot.captureMeterReader->GetNextPacketSize(&packetFrames);
+            }
+        }
+        if (FAILED(result))
+        {
+            FB_TRACE("CAPTURE_METER_DRAIN hr=%08X", static_cast<unsigned>(result));
+            if (slot.captureMeterClient)
+            {
+                slot.captureMeterClient->Stop();
+            }
+            slot.captureMeterReader.Reset();
+            slot.captureMeterClient.Reset();
+            slot.captureMeterOpenAttempted = false;
         }
     }
 
@@ -1123,6 +1222,7 @@ struct NativeAudioController::Impl
             slot.kind = source.kind;
             slot.name = source.name;
             slot.isDefault = source.isDefault;
+            EnsureCaptureMeterStream(slot);
             // Preserve the established endpoint interfaces across polling
             // passes. Re-activating them every 500 ms creates avoidable COM
             // churn and can interrupt a fast surface gesture.
@@ -1145,6 +1245,7 @@ struct NativeAudioController::Impl
             empty->endpointDevice = std::move(source.device);
             empty->endpointVolume = std::move(source.volume);
             empty->endpointMeter = std::move(source.meter);
+            EnsureCaptureMeterStream(*empty);
         }
         const auto renderCount = std::count_if(slots.begin(), slots.end(), [](const Slot& slot)
         {
@@ -1291,6 +1392,10 @@ struct NativeAudioController::Impl
                     float volume = 0.0F;
                     BOOL muted = FALSE;
                     float peak = 0.0F;
+                    if (slot.kind == SlotKind::CaptureEndpoint)
+                    {
+                        DrainCaptureMeterStream(slot);
+                    }
                     if (SUCCEEDED(slot.endpointVolume->GetMasterVolumeLevelScalar(&volume)))
                     {
                         strip.volume = volume;
