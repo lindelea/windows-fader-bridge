@@ -1,5 +1,6 @@
 param(
-    [string]$AvidEuconSdkDir = 'C:\Program Files\Avid\EUCON SDK'
+    [string]$AvidEuconSdkDir = 'C:\Program Files\Avid\EUCON SDK',
+    [switch]$Validation
 )
 
 $ErrorActionPreference = 'Stop'
@@ -29,9 +30,15 @@ $project = Join-Path $projectRoot 'src\FaderBridge.EuconHost\FaderBridge.EuconHo
 $output = Join-Path $projectRoot 'artifacts\eucon\Release'
 $solutionDir = "/p:SolutionDir=$($projectRoot.Replace('\', '/'))/"
 $sdkDir = "/p:AvidEuconSdkDir=$($AvidEuconSdkDir.Replace('\', '/'))"
+$outputOptions = @()
+if ($Validation) {
+    $output = Join-Path $projectRoot 'artifacts\eucon-validation\Release'
+    $intermediate = Join-Path $projectRoot 'obj\eucon-validation\Release'
+    $outputOptions = @("/p:OutDir=$($output.Replace('\', '/'))/", "/p:IntDir=$($intermediate.Replace('\', '/'))/")
+}
 
 & $msbuild $project /m /t:Build /p:Configuration=Release /p:Platform=x64 `
-    $solutionDir $sdkDir /v:minimal
+    $solutionDir $sdkDir @outputOptions /v:minimal
 
 if ($LASTEXITCODE -ne 0) {
     throw "EUCON host build failed with exit code $LASTEXITCODE."

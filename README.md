@@ -1,37 +1,119 @@
 # Windows Fader Bridge
 
-Windows Fader Bridge is an experimental native control-surface bridge for the
-Windows per-application volume mixer. It exposes a device-independent mixer
-model through the native EUCON 2026.4 SDK; the Avid S3 and Avid Control are the
-first validation surfaces. A separate, protocol-first Mackie Control research
-host is available; iCON P1-Nano is a planned validation device, not a dependency.
+Native Windows audio control from your control surface: application volume,
+pan, mute, solo, meters and everyday Windows commands.
 
-## Mackie Control research edition
+Two independent applications share the project:
 
-`Windows Fader Bridge for Mackie Control` runs separately from the EUCON host.
-It implements an eight-strip MCU bank plus master over an explicitly chosen
-MIDI pair, with stable Windows application/device tracks, touch-safe feedback,
-volume/balance, mute/solo/default-device selection, transport and 186 learnable
-Windows commands. It does not require the Avid SDK or iCON software to build.
+| Edition | Connection | Validation hardware |
+| --- | --- | --- |
+| **Windows Fader Bridge for EUCON** | Avid EUCON runtime / EuControl | Avid S3 and Avid Control on iPad |
+| **Windows Fader Bridge for Mackie Control** | Standard Mackie Control (MCU) over MIDI | iCON P1-Nano in Cubase/MCU mode |
+
+These are protocol adapters, not device-specific drivers. Each edition has its
+own executable, settings and lifecycle. P1-Nano is the first Mackie test device,
+not a requirement; other MCU controllers use the same protocol implementation.
+
+## Windows Fader Bridge for Mackie Control
+
+A native desktop workspace in **English and Simplified Chinese**, with an
+independent Mackie-only icon, background operation and optional Windows startup.
+
+- Live Windows output, input and application channels, with volume, pan, mute,
+  solo and peak-meter feedback. Offline channels are removed automatically;
+  stable identities and touch protection prevent a gesture from moving to a
+  different application during channel-list changes.
+- Eight-strip MCU banking plus master. For the current-channel encoder workflow,
+  encoder 1 controls volume, encoder 2 controls pan (press to center), and
+  encoders 3–8 have separate left/right/press command assignments.
+- Transport control, song/artist information and elapsed playback time where
+  Windows media sessions provide them. The numeric surface display falls back
+  to the system clock when idle. Player support varies; readable progress does
+  not necessarily mean seeking is supported.
+- A searchable, categorized browser for **186 Windows commands**, with command
+  descriptions and separate button, encoder and Jog/Move/Zoom assignments.
+  Ordinary Jog defaults to playback seeking; Navi/Focus retain native semantics.
+- **＋ Add device** manages up to 16 independent main controllers, each with its
+  own MIDI pair, connection setting and mappings. Auto-connect is enabled by
+  default for explicitly saved, uniquely identifiable ports only. Manual
+  disconnect pauses automatic retry for the current run.
+- An optional 80-key touchscreen preset generator for P1-Nano, based on the
+  user's own iMAP export. It preserves other DAW slots and non-touch controls;
+  no vendor preset or configuration file is redistributed.
+
+### Screenshots — English interface
+
+#### Live mixer and playback information
+
+![Windows Fader Bridge for Mackie Control — English Overview](docs/images/mackie-overview-en.png)
+
+#### Searchable Windows command assignments
+
+![Windows Fader Bridge for Mackie Control — English Button mapping](docs/images/mackie-button-mapping-en.png)
+
+Select a control on the left, search or browse commands on the right, read its
+description and choose **Assign command**. While editing, custom input from the
+selected device is previewed rather than executed; other devices keep working.
+
+#### Device settings and automatic connection
+
+![Windows Fader Bridge for Mackie Control — English Devices](docs/images/mackie-devices-en.png)
+
+Screenshots show the real application. Windows-supplied device and application
+names retain their original language even when the interface is English.
+
+### Build and first connection
+
+Requires Windows 11 x64, Visual Studio 2022 v143 C++ build tools and a Windows
+SDK. **No Avid SDK, EuControl or iCON software is required to build this edition.**
 
 ```powershell
 .\scripts\build-mackie.ps1
 ```
 
-Output: `artifacts/mackie/Release/WindowsFaderBridge.Mackie.exe`. MIDI stays
-disconnected until the user chooses ports and connects. The Windows audio
-integration and protocol tests pass; physical controller behavior remains
-unverified. Manufacturer-specific handshakes/display extensions and HUI are
-not implemented. This is not a certified compatibility claim for all MCU devices.
+Output: `artifacts/mackie/Release/WindowsFaderBridge.Mackie.exe`.
+
+1. Put the controller in Mackie Control/MCU mode; use Cubase mode for P1-Nano.
+2. Open **Settings → Device**, select the controller profile and matching MIDI
+   input/output, then **Save device**. Saved ports connect automatically unless
+   you switch Auto-connect off; manual mode uses **Connect device**.
+3. Use **Button mapping**, **Encoder mapping** or **Jog & directions** to assign
+   commands. Return to Overview to use them. Change language in **General**.
+4. Add another independent controller with **＋ Add device**, using a different
+   MIDI pair. Do not share the same ports with another application or select a
+   maintenance/iMAP port.
+
+Default builds run protocol/settings and preset-generator tests without opening
+MIDI ports or changing audio. `-AudioIntegration` opts into a test that controls
+only its own silent Windows audio session.
+
+### Compatibility and limits
+
+Core workflows have been tested with the owner's P1-Nano. Pure tests cover
+independent device state, port safety and configuration migration, but **two
+physical controllers operating together have not yet been verified**. There is
+no claim of certified compatibility with every MCU device. HUI, MCU Extender
+aggregation and manufacturer-specific handshakes/display extensions are not
+implemented. Media controls depend on each player's Windows integration.
 
 See the [Chinese Mackie guide](docs/MACKIE_GUIDE_ZH.md) and
+[touchscreen setup guide](docs/MACKIE_TOUCHSCREEN_ZH.md), plus the
+[desktop workflow](docs/MACKIE_DESKTOP_UI.md) and
 [protocol/source/verification notes](docs/MACKIE_RESEARCH.md).
 
-## Screenshots
+## Windows Fader Bridge for EUCON
+
+The EUCON edition publishes a device-independent application model through the
+native EUCON 2026.4 SDK. Avid's runtime owns discovery, assignment and banking.
 
 ### Windows application
 
-![Windows Fader Bridge status window](docs/images/windows-fader-bridge-app.png)
+![Windows Fader Bridge for EUCON status window](docs/images/windows-fader-bridge-app.png)
+
+The EUCON screenshots below were captured before the edition suffix was added.
+The displayed product name is now **Windows Fader Bridge for EUCON**. Its existing
+executable name, startup identity and EUCON registration identity are retained
+for compatibility with saved configurations and surface assignments.
 
 ### Assignable commands in EuControl
 
@@ -53,7 +135,7 @@ The pictured surface is validation hardware, not a device-specific dependency.
 Windows Fader Bridge publishes a device-independent EUCON application model and
 leaves surface discovery, assignment and banking to the Avid EUCON runtime.
 
-## Current application
+### EUCON features
 
 `src/FaderBridge.EuconHost` is a native x64 EUCON application. It currently
 provides:
@@ -85,7 +167,7 @@ The application fader mapping is intentionally linear: table coordinates
 `-9600..0` map to Windows volume `0..100%`. The region above 0 dB is treated as
 physical overtravel and rebounds to Windows 100%.
 
-## Build
+### Build the EUCON edition
 
 Requirements:
 
