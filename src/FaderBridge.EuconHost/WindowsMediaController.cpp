@@ -65,6 +65,11 @@ std::uintptr_t SessionKey(const MediaSession& session)
 }
 }
 
+struct WindowsMediaSession
+{
+    MediaSession session{ nullptr };
+};
+
 struct WindowsMediaController::Impl
 {
     struct MetadataEntry
@@ -87,7 +92,7 @@ struct WindowsMediaController::Impl
     std::shared_ptr<SharedCache> cache = std::make_shared<SharedCache>();
 
     MediaSession Find(const std::wstring& executablePath,
-        const std::wstring& packageFamilyName) const
+        const std::wstring& packageFamilyName, bool useSystemCurrentWhenEmpty = false) const
     {
         if (!manager)
         {
@@ -96,6 +101,8 @@ struct WindowsMediaController::Impl
         MediaSession best{ nullptr };
         int bestScore = 0;
         const auto current = manager.GetCurrentSession();
+        if (useSystemCurrentWhenEmpty && executablePath.empty() && packageFamilyName.empty())
+            return current;
         for (const auto& session : manager.GetSessions())
         {
             const auto source = std::wstring(session.SourceAppUserModelId());
@@ -240,17 +247,19 @@ bool WindowsMediaController::Initialize()
 }
 
 WindowsMediaState WindowsMediaController::GetState(
-    const std::wstring& executablePath, const std::wstring& packageFamilyName) const
+    const std::wstring& executablePath, const std::wstring& packageFamilyName, const bool includeTimeline,
+    const bool useSystemCurrentWhenEmpty) const
 {
     WindowsMediaState state;
     try
     {
-        const auto session = impl_->Find(executablePath, packageFamilyName);
+        const auto session = impl_->Find(executablePath, packageFamilyName, useSystemCurrentWhenEmpty);
         if (!session)
         {
             return state;
         }
         state.available = true;
+        state.controlSession = std::make_shared<WindowsMediaSession>(WindowsMediaSession{session});
         state.sourceAppId = session.SourceAppUserModelId();
         const auto playback = session.GetPlaybackInfo();
         const auto controls = playback.Controls();
@@ -285,6 +294,28 @@ WindowsMediaState WindowsMediaController::GetState(
         }
         impl_->ReadMetadata(session, state.title, state.artist);
         impl_->TraceCapabilities(state);
+        if (includeTimeline)
+        {
+            // Additive Mackie read path: preserve EUCON's existing seek/percent
+            // semantics, and never gate display-only time on seeking permission.
+            try
+            {
+                auto& time = state.timeline;
+                time.start = timeline.StartTime().count();
+                time.end = timeline.EndTime().count();
+                time.position = timeline.Position().count();
+                time.seekStart = start.count();
+                time.seekEnd = end.count();
+                time.updatedUtc = timeline.LastUpdatedTime().time_since_epoch().count();
+                time.sampledUtc = winrt::clock::now().time_since_epoch().count();
+                if (const auto rate = playback.PlaybackRate()) time.rate = rate.Value();
+                time.available = time.start >= 0 && time.end > time.start && time.position >= 0;
+            }
+            catch (const winrt::hresult_error&)
+            {
+                state.timeline = {}; // Optional display failure never removes controls.
+            }
+        }
     }
     catch (const winrt::hresult_error& error)
     {
@@ -299,7 +330,24 @@ bool WindowsMediaController::Execute(const std::wstring& executablePath,
 {
     try
     {
-        const auto session = impl_->Find(executablePath, packageFamilyName);
+        WindowsMediaState target;
+        target.controlSession = std::make_shared<WindowsMediaSession>(
+            WindowsMediaSession{impl_->Find(executablePath, packageFamilyName)});
+        return Execute(target, action, value);
+    }
+    catch (const winrt::hresult_error& error)
+    {
+        FB_TRACE("MEDIA_COMMAND action=%d hr=%08X", static_cast<int>(action), static_cast<unsigned>(error.code()));
+        return false;
+    }
+}
+
+bool WindowsMediaController::Execute(const WindowsMediaState& state,
+    const MediaControlAction action, const float value) const
+{
+    try
+    {
+        const auto session = state.controlSession ? state.controlSession->session : MediaSession{nullptr};
         if (!session)
         {
             FB_TRACE("MEDIA_COMMAND action=%d accepted=0 reason=no_session",

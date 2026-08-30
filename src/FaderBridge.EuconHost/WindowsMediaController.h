@@ -2,6 +2,7 @@
 
 #include <memory>
 #include <string>
+#include "WindowsMediaTimeline.h"
 
 enum class MediaControlAction
 {
@@ -13,6 +14,8 @@ enum class MediaControlAction
     Shuffle,
     Repeat,
 };
+
+struct WindowsMediaSession;
 
 struct WindowsMediaState
 {
@@ -32,6 +35,9 @@ struct WindowsMediaState
     std::wstring sourceAppId;
     std::wstring title;
     std::wstring artist;
+    WindowsMediaTimeline timeline;
+    // Opaque, process-local session lease; never serialized or sent to a surface.
+    std::shared_ptr<WindowsMediaSession> controlSession;
 };
 
 class WindowsMediaController final
@@ -45,10 +51,14 @@ public:
 
     bool Initialize();
     WindowsMediaState GetState(const std::wstring& executablePath,
-        const std::wstring& packageFamilyName) const;
+        const std::wstring& packageFamilyName, bool includeTimeline = false,
+        bool useSystemCurrentWhenEmpty = false) const;
     bool Execute(const std::wstring& executablePath,
         const std::wstring& packageFamilyName, MediaControlAction action,
         float value) const;
+    // Execute against the exact session that supplied the sampled capabilities
+    // and timeline, even if the system's current player changes in between.
+    bool Execute(const WindowsMediaState& state, MediaControlAction action, float value) const;
 
 private:
     struct Impl;

@@ -2,7 +2,7 @@
 #include "WindowsCommand.h"
 #include <string_view>
 
-// Snapshot of the project's own 184 Windows commands. Intentionally independent
+// Project-owned 184 Windows commands and two audio commands. Independent
 // of EUCON SDK types. See docs/MACKIE_RESEARCH.md for the staged shared-core plan.
 struct MackieCommand
 {
@@ -10,7 +10,7 @@ struct MackieCommand
     const wchar_t* category;
     const wchar_t* label;
     WindowsCommand command;
-    int special; // 1 = mono audio, 2 = clear solo; zero = WindowsCommand
+    int special; // 1 mono, 2 clear solo; 0 WindowsCommand
 };
 inline constexpr MackieCommand MackieCommands[] = {
     {L"MonoAudio", L"Windows Audio", L"Mono Audio", {}, 1},

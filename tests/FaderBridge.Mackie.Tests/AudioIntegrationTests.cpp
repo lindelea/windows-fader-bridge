@@ -118,6 +118,8 @@ int main()
         f.Note(0x68, true); const auto bytes = mackie::Fader(0, .37F);
         f.surface.Input(bytes[0] | (bytes[1] << 8) | (bytes[2] << 16), GetTickCount64()); f.Note(0x68, false);
         f.Until([&] { return f.WindowsVolume(.37F) && std::abs(f.Own()->volume - .37F) < .002F; }, "MCU fader -> keyed queue -> actual Windows volume");
+        f.surface.Input(0xB0 | (0x10 << 8) | (3 << 16), GetTickCount64());
+        f.Until([&] { return f.WindowsVolume(.40F) && std::abs(f.Own()->volume - .40F) < .002F; }, "encoder 1 -> current channel Windows volume");
         f.feedback.clear(); Hr(f.volume->SetMasterVolume(.61F, nullptr), "external test session volume");
         f.Until([&] { return std::find(f.feedback.begin(), f.feedback.end(), mackie::Fader(0, .61F)) != f.feedback.end(); }, "Windows volume -> MCU motor feedback");
         Hr(f.volume->SetMute(FALSE, nullptr), "initial unmute of own silent session");
@@ -126,9 +128,9 @@ int main()
         f.Press(0x10); f.Until([&] { return f.WindowsMute(false) && !f.Own()->muted; }, "MCU unmute -> Windows");
         if (f.Own()->panAvailable)
         {
-            f.surface.Input(0xB0 | (0x10 << 8) | (63 << 16), GetTickCount64());
+            f.surface.Input(0xB0 | (0x11 << 8) | (63 << 16), GetTickCount64());
             f.Until([&] { return f.Own()->pan > .99F; }, "MCU encoder -> Windows channel balance");
-            f.Press(0x20); f.Until([&] { return std::abs(f.Own()->pan) < .01F; }, "encoder push -> Windows balance center");
+            f.Press(0x21); f.Until([&] { return std::abs(f.Own()->pan) < .01F; }, "encoder push -> Windows balance center");
         }
         else std::cout << "SKIP pan: default output/session is not balance-capable\n";
         Check(f.controller->QueueTrackControl(AudioTrackControl::Volume, L"integration:nonexistent", .99F), "queue stale identity");

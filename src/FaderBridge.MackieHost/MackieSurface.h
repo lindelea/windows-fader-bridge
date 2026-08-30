@@ -1,6 +1,7 @@
 #pragma once
 
 #include "MackieProtocol.h"
+#include "MackieJog.h"
 #include <functional>
 #include <map>
 #include <set>
@@ -8,8 +9,10 @@
 namespace mackie
 {
 enum class ActionKind { Volume, Pan, Mute, Solo, DefaultDevice, Focus,
-    ClearSolo, PlayPause, Stop, Previous, Next, Repeat, Seek };
-struct Action { ActionKind kind; std::wstring key; float value = 0; };
+    ClearSolo, PlayPause, Stop, Previous, Next, Repeat, Seek, Encoder, SeekSeconds, CursorCommand };
+// Encoder value: -1 = left, +1 = right, 0 = push. Index is zero-based.
+// CursorCommand uses value = -1 up/left, +1 down/right, encoder = axis 0..4.
+struct Action { ActionKind kind; std::wstring key; float value = 0; int encoder = -1; bool strictTarget = false; };
 struct Track
 {
     std::wstring key, name;
@@ -37,12 +40,21 @@ public:
     void Input(std::uint32_t raw, std::uint64_t now);
     void Feedback(std::uint64_t now, bool force = false);
     void ResetConnection();
+    void ResetEncoderInput()
+    { for (int i = 0x20; i < 0x28; ++i) pressed_[i] = false; encoderDue_.fill(0); }
+    void ResetJogInput() { for (int i : {0x60, 0x61, 0x62, 0x63, 0x65}) pressed_[i] = false; CursorGestures.ResetGesture(); }
     void InvalidateFeedback() { cache_.clear(); dirty_ = true; }
     bool Bank(int delta);
     bool Select(const std::wstring& key, bool focus = false);
-    void SetEncoderVolume(bool enabled) { if (!Touched()) { volumeKnobs_ = enabled; flip_ = false; dirty_ = true; } }
-    bool VolumeKnobs() const { return volumeKnobs_; }
-    bool Flipped() const { return flip_; }
+    void JogRotate(int delta, std::uint64_t now);
+    void Cursor(int note, std::uint64_t now);
+    bool CursorZoom() const { return cursorZoom_; }
+    void SetCursorZoom(bool zoom) { cursorZoom_ = zoom; CursorGestures.ResetGesture(); dirty_ = true; }
+    JogControl Jog;
+    // Per direction: -1 backward seek, +1 forward seek, 0 discrete/custom command.
+    std::array<int, 2> JogSeekDirections{-1, 1};
+    CursorControl CursorGestures;
+    bool ChannelCommand(ActionKind kind, float value, std::uint64_t now);
     bool Touched() const;
     int BankStart() const { return bank_; }
     const std::vector<std::wstring>& Order() const { return order_; }
@@ -51,12 +63,15 @@ public:
     const Track* Selected() const;
     std::wstring Status() const { return status_; }
     bool RequireTouch = true;
+    bool DeferTopology = false; // Another attached surface is holding a fader.
     bool LcdEnabled = true;
     bool MetersEnabled = true;
     bool MediaPlaying = false, MediaAvailable = false, MediaRepeat = false;
+    double TimeDisplaySeconds = -1; // Media elapsed or local clock, independent of Transport LEDs.
     bool AnySolo = false;
 private:
     const Track* Find(const std::wstring& key) const;
+    void ReconcileOrder();
     float Value(const Track& track, ActionKind kind, std::uint64_t now);
     void Request(const Track& track, ActionKind kind, float value, std::uint64_t now);
     void Cached(int id, const Bytes& bytes, bool force);
@@ -64,15 +79,20 @@ private:
     Handler act_;
     std::map<std::wstring, Track> tracks_;
     std::vector<std::wstring> order_;
+    std::vector<std::wstring> onlineOrder_;
     std::wstring selected_, status_;
+    std::wstring selectPressKey_;
+    int selectPressNote_ = -1;
+    bool cursorZoom_ = false;
     std::map<std::pair<std::wstring, ActionKind>, Pending> pending_;
     std::array<bool, 9> touched_{};
     std::array<std::wstring, 9> touchKey_{};
     std::array<bool, 128> pressed_{};
+    std::array<std::uint64_t, 6> encoderDue_{};
     std::map<int, Bytes> cache_;
     int bank_ = 0;
-    bool flip_ = false, volumeKnobs_ = false, dirty_ = true;
+    bool haveSnapshot_ = false, dirty_ = true;
     std::uint64_t meterDue_ = 0;
-    std::uint64_t lcdDue_ = 0, ringDue_ = 0;
+    std::uint64_t lcdDue_ = 0, ringDue_ = 0, timeDue_ = 0;
 };
 }

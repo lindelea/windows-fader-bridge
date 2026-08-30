@@ -34,6 +34,9 @@
     <ClCompile Include="main.cpp" /><ClCompile Include="MackieApplication.cpp" />
     <ClCompile Include="MackieSurface.cpp" /><ClCompile Include="WinMidiPort.cpp" />
     <ClCompile Include="MackieSettings.cpp" /><ClCompile Include="MackieMedia.cpp" />
+    <ClCompile Include="MackieJogSettings.cpp" />
+    <ClCompile Include="MackieDesktop.cpp" />
+    <ClCompile Include="MackieDevices.cpp" />
     <!-- Project-owned Windows-only sources. No Avid headers, examples or libraries. -->
     <ClCompile Include="..\FaderBridge.EuconHost\NativeAudioController.cpp" />
     <ClCompile Include="..\FaderBridge.EuconHost\WindowsMediaController.cpp" />

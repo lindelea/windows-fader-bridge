@@ -12,10 +12,10 @@ public:
     MackieMedia();
     ~MackieMedia();
     void Target(const std::wstring& path, const std::wstring& package);
-    void Request(mackie::ActionKind kind, float value = 0);
+    void Request(mackie::ActionKind kind, float value = 0, bool allowGlobalFallback = true);
     WindowsMediaState State(std::wstring& status);
 private:
-    struct RequestItem { mackie::ActionKind kind; float value; std::wstring path, package; };
+    struct RequestItem { mackie::ActionKind kind; float value; std::wstring path, package; bool allowGlobalFallback; };
     void Run();
     std::mutex mutex_;
     std::condition_variable wake_;

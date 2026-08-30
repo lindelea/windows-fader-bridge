@@ -16,3 +16,6 @@ MIDI Mixer Setup *.exe
 *.user
 *.suo
 *.obj
+# Locally exported vendor mappings are private inputs, never redistributed.
+*.p1n-daw
+*.imap

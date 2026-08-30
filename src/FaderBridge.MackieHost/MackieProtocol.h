@@ -33,6 +33,40 @@ inline Bytes Led(int note, bool on)
     if (note < 0 || note > 127) return {};
     return {0x90, static_cast<std::uint8_t>(note), static_cast<std::uint8_t>(on ? 127 : 0)};
 }
+// Ten display positions, indexed from the right as specified by the
+// manufacturer. The application uses six for HH.MM.SS; no invented frames.
+inline std::array<std::uint8_t, 10> TimeDigits(double seconds)
+{
+    std::array<std::uint8_t, 10> digits{};
+    digits.fill(0x20);
+    const bool valid = std::isfinite(seconds) && seconds >= 0 && seconds < 360000;
+    const auto total = valid ? static_cast<unsigned>(seconds) : 0U;
+    unsigned fields[] = {total % 60, (total / 60) % 60, total / 3600};
+    for (int pair = 0; pair < 3; ++pair)
+    {
+        digits[pair * 2] = valid ? static_cast<std::uint8_t>('0' + fields[pair] % 10) : 0x20;
+        digits[pair * 2 + 1] = valid ? static_cast<std::uint8_t>('0' + fields[pair] / 10) : 0x20;
+    }
+    if (valid) { digits[2] |= 0x40; digits[4] |= 0x40; }
+    return digits;
+}
+inline Bytes TimeDigit(int rightIndex, std::uint8_t character)
+{
+    if (rightIndex < 0 || rightIndex >= 10 || character >= 128) return {};
+    return {0xB0, static_cast<std::uint8_t>(0x40 + rightIndex), character};
+}
+inline std::wstring TimeText(double seconds)
+{
+    if (!std::isfinite(seconds) || seconds < 0 || seconds >= 360000) return L"--:--:--";
+    const auto digits = TimeDigits(seconds);
+    std::wstring result;
+    for (int i = 5; i >= 0; --i)
+    {
+        result += static_cast<wchar_t>(digits[i] & 0x3F);
+        if (i == 4 || i == 2) result += L':';
+    }
+    return result;
+}
 inline Bytes Ring(int channel, float pan, bool available, bool volumeMode = false)
 {
     if (channel < 0 || channel >= Strips) return {};

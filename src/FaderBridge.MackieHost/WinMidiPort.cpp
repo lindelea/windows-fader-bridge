@@ -1,24 +1,32 @@
 #include "WinMidiPort.h"
 #include "DiagnosticLog.h"
 
-std::vector<MidiPortName> WinMidiPort::Inputs()
+std::vector<MidiPortName> WinMidiPort::Inputs(bool traceEnumeration)
 {
     std::vector<MidiPortName> ports;
-    for (UINT i = 0; i < midiInGetNumDevs(); ++i)
+    if (traceEnumeration) FB_TRACE("MIDI_ENUM_INPUT begin");
+    const auto count = midiInGetNumDevs();
+    if (traceEnumeration) FB_TRACE("MIDI_ENUM_INPUT count=%u", count);
+    for (UINT i = 0; i < count; ++i)
     {
         MIDIINCAPSW caps{};
         if (midiInGetDevCapsW(i, &caps, sizeof(caps)) == MMSYSERR_NOERROR) ports.push_back({i, caps.szPname});
     }
+    if (traceEnumeration) FB_TRACE("MIDI_ENUM_INPUT end");
     return ports;
 }
-std::vector<MidiPortName> WinMidiPort::Outputs()
+std::vector<MidiPortName> WinMidiPort::Outputs(bool traceEnumeration)
 {
     std::vector<MidiPortName> ports;
-    for (UINT i = 0; i < midiOutGetNumDevs(); ++i)
+    if (traceEnumeration) FB_TRACE("MIDI_ENUM_OUTPUT begin");
+    const auto count = midiOutGetNumDevs();
+    if (traceEnumeration) FB_TRACE("MIDI_ENUM_OUTPUT count=%u", count);
+    for (UINT i = 0; i < count; ++i)
     {
         MIDIOUTCAPSW caps{};
         if (midiOutGetDevCapsW(i, &caps, sizeof(caps)) == MMSYSERR_NOERROR) ports.push_back({i, caps.szPname});
     }
+    if (traceEnumeration) FB_TRACE("MIDI_ENUM_OUTPUT end");
     return ports;
 }
 bool WinMidiPort::Check(MMRESULT result, const wchar_t* operation)

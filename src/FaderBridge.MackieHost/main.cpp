@@ -14,14 +14,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR arguments, int show)
     if (GetLastError() == ERROR_ALREADY_EXISTS)
     {
         if (const auto window = FindWindowW(L"WindowsFaderBridge.Mackie.Main", nullptr))
-        { ShowWindow(window, SW_RESTORE); SetForegroundWindow(window); }
+        { PostMessageW(window, WM_APP + 13, 0, 0); }
         CloseHandle(mutex); return 0;
     }
     const auto com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     DiagnosticLog::Instance().Start();
-    FB_TRACE("MACKIE_HOST_START smoke=%d protocol=MCU model=14 no_auto_connect=1", smoke);
+    FB_TRACE("MACKIE_HOST_START smoke=%d protocol=MCU model=14 saved_ports_only=1", smoke);
     int result = 2;
-    try { MackieApplication application(smoke); result = application.Run(instance, show); }
+    try { MackieApplication application(smoke,std::wstring_view(arguments).find(L"--diagnostics")!=std::wstring_view::npos); result = application.Run(instance,
+        std::wstring_view(arguments).find(L"--background") != std::wstring_view::npos ? SW_HIDE : show); }
     catch (const std::exception& error) { FB_TRACE("MACKIE_FATAL %s", error.what()); }
     DiagnosticLog::Instance().Stop();
     if (SUCCEEDED(com)) CoUninitialize();

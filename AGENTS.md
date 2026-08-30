@@ -20,9 +20,34 @@ Build/test with `scripts/build-mackie.ps1`. `-AudioIntegration` is opt-in and
 changes only the test process's own silent audio session. Pure tests and smoke
 must not open MIDI ports. Physical MIDI tests require an explicit selected
 pair; never auto-open EuMidi, an iMAP maintenance port or a guessed device.
+Automatic connection is a user setting (default on) for explicitly saved,
+uniquely resolvable input/output pairs only. Preserve per-device manual-disconnect
+pause and port exclusivity. Multiple independent main units share one audio
+engine, but own their MIDI handles, surface/touch state, feedback and assignments.
+This does not imply MCU Extender support. Smoke must check every device for zero
+MIDI sends and no open handles. Keep public UI free of the developer dashboard;
+`--diagnostics` is the private startup entry point.
 Keep touch state keyed across banking and endpoint changes. Shared Windows
 backend extensions must retain existing EUCON entry-point semantics and get
 an isolated-output EUCON regression build; never overwrite the live executable.
+
+The Mackie edition keeps one stable logical identity per Windows application or
+device, but its visible order is a dense online list: remove offline entries and
+append newly online entries automatically. Defer topology changes while any
+fader is touched so a physical gesture can never inherit another track. Encoders
+serve the current logical channel: encoder 1 is volume, encoder 2 is Pan with
+push-to-center, and encoders 3–8 have independent left/right/push allowlisted
+command bindings. Faders remain volume; assignment/Flip cannot swap these roles.
+Current-channel identity follows explicit selection, the first touched fader,
+and the selected strip offset when banking. Do not infer host selection from
+device-local display navigation that supplies no identifiable MIDI event.
+
+Ordinary Jog has independent left/right command bindings, defaulting to playback
+position backward/forward. Native Navi/Focus must not acquire software mode
+overrides or custom assignments. Standard Cursor plus Zoom state
+routes to four independent Move/Zoom axes with two user-assigned directions each.
+Keep their settings, dispatch and feedback independent from ordinary CC Jog;
+configuration editing may detect direction input but must not execute commands.
 
 The remaining sections define the established EUCON edition and still apply to
 any EUCON model/SDK changes.

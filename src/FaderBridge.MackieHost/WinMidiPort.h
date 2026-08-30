@@ -15,8 +15,8 @@ public:
     using Receiver = std::function<void(DWORD)>;
     explicit WinMidiPort(Receiver receiver) : receiver_(std::move(receiver)) {}
     ~WinMidiPort();
-    static std::vector<MidiPortName> Inputs();
-    static std::vector<MidiPortName> Outputs();
+    static std::vector<MidiPortName> Inputs(bool traceEnumeration = true);
+    static std::vector<MidiPortName> Outputs(bool traceEnumeration = true);
     bool Open(UINT input, UINT output);
     void Close();
     void Send(const mackie::Bytes& bytes);
