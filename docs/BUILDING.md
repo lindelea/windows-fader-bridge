@@ -1,6 +1,10 @@
-# Building Windows Fader Bridge
+# Building Windows Fader Bridge for EUCON
 
-Windows Fader Bridge is open-source application code, but its native EUCON
+For the SDK-free Mackie Control edition, see [its guide](MACKIE_GUIDE_ZH.md).
+Use `scripts/build-eucon.ps1 -Validation` for an isolated EUCON regression build
+under `artifacts/eucon-validation/Release`; it does not replace the live binary.
+
+Windows Fader Bridge for EUCON is open-source application code, but its native EUCON
 adapter requires the separately licensed Avid EUCON Application SDK. The SDK is
 not redistributable as part of this repository and is not downloaded by the
 build script.

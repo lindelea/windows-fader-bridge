@@ -21,6 +21,16 @@ library.
   the project has the right to grant that license. It grants no rights to Avid
   materials or technology supplied under separate terms.
 
+The independent Mackie Control host has no Avid SDK or runtime dependency.
+
+## Mackie Control and iCON
+
+Mackie Control, MCU and iCON product names identify interoperability targets;
+their trademarks belong to their respective owners. This is an independent
+implementation, not an endorsed vendor driver. Manufacturer manuals, firmware,
+iMAP software, presets and third-party controller implementation source are not
+redistributed. The protocol research notes contain acquisition/source links.
+
 ## Microsoft Windows
 
 The project calls Windows system APIs and links against Windows system import

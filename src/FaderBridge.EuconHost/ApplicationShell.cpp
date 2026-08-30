@@ -20,7 +20,7 @@
 namespace
 {
 constexpr wchar_t kWindowClass[] = L"WindowsFaderBridge.MainWindow";
-constexpr wchar_t kProductName[] = L"Windows Fader Bridge";
+constexpr wchar_t kProductName[] = L"Windows Fader Bridge for EUCON";
 constexpr wchar_t kProductVersion[] = L"0.2.0";
 constexpr wchar_t kRunKey[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 constexpr wchar_t kRunValue[] = L"WindowsFaderBridge";
@@ -227,7 +227,7 @@ bool ApplicationShell::OnCreate()
     CreateFonts();
 
     startupCheck_ = CreateWindowExW(0, L"BUTTON",
-        L"Start Windows Fader Bridge with Windows", WS_CHILD | WS_VISIBLE |
+        L"Start with Windows", WS_CHILD | WS_VISIBLE |
         WS_TABSTOP | BS_OWNERDRAW, 0, 0, 0, 0, window_,
         reinterpret_cast<HMENU>(static_cast<INT_PTR>(kStartupCheckId)), instance_, nullptr);
     hideButton_ = CreateWindowExW(0, L"BUTTON", L"Hide to tray",
@@ -721,7 +721,7 @@ void ApplicationShell::DrawStartupControl(const DRAWITEMSTRUCT& item) const
     DeleteObject(fill);
     RECT textRect{ box.right + Scale(window_, 10), item.rcItem.top, item.rcItem.right,
         item.rcItem.bottom };
-    DrawTextLine(dc, L"Start Windows Fader Bridge with Windows", textRect,
+    DrawTextLine(dc, L"Start with Windows", textRect,
         bodyFont_, kText);
     if ((item.itemState & ODS_FOCUS) != 0)
     {
@@ -811,7 +811,7 @@ void ApplicationShell::ShowTrayMenu(const POINT location)
     startupEnabled_ = IsStartupEnabled();
     InvalidateRect(startupCheck_, nullptr, TRUE);
     const auto menu = CreatePopupMenu();
-    AppendMenuW(menu, MF_STRING | MF_DEFAULT, kTrayOpenId, L"Open Windows Fader Bridge");
+    AppendMenuW(menu, MF_STRING | MF_DEFAULT, kTrayOpenId, L"Open Windows Fader Bridge for EUCON");
     const auto ready = host_ && host_->IsReady();
     const auto status = std::wstring(ready ? L"Bridge is active · " :
         L"EUCON initialization failed · ") + std::to_wstring(activeCount_) +
@@ -824,7 +824,7 @@ void ApplicationShell::ShowTrayMenu(const POINT location)
     AppendMenuW(menu, MF_STRING, kTrayRestartId, L"Restart");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, kTrayDiagnosticsId, L"Open diagnostics folder");
-    AppendMenuW(menu, MF_STRING, kTrayAboutId, L"About Windows Fader Bridge...");
+    AppendMenuW(menu, MF_STRING, kTrayAboutId, L"About Windows Fader Bridge for EUCON...");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, kTrayExitId, L"Exit");
     SetForegroundWindow(window_);
@@ -840,7 +840,7 @@ void ApplicationShell::ShowAboutDialog() const
         L"\n\nEUCON surface discovery, assignment, banking, and hardware communication "
         L"are managed by EuControl or WSControl."
         L"\n\nCopyright 2026 Lindelea";
-    MessageBoxW(window_, message.c_str(), L"About Windows Fader Bridge",
+    MessageBoxW(window_, message.c_str(), L"About Windows Fader Bridge for EUCON",
         MB_OK | MB_ICONINFORMATION);
 }
 

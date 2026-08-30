@@ -1,0 +1,15 @@
+name: Mackie Control (no Avid SDK)
+on:
+  push:
+    branches: [main, 'codex/mackie-*']
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  native:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build standalone MCU host and run non-hardware tests
+        shell: pwsh
+        run: ./scripts/build-mackie.ps1
