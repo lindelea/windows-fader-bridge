@@ -1,5 +1,32 @@
 # Windows Fader Bridge development instructions
 
+## Parallel product scope: Mackie Control research
+
+The separately requested Mackie Control edition is a protocol adapter, not an
+iCON P1-Nano driver. Its boundary is Windows audio -> stable logical tracks ->
+MCU surface state -> MIDI transport. Keep its executable, settings, lifecycle,
+build output and tests independent of the verified EUCON edition. Do not launch
+or replace EUCON when testing Mackie. Device profiles may describe reserved
+ports/capabilities; do not branch the MCU codec on manufacturer/device names.
+
+Read `docs/MACKIE_RESEARCH.md` for the manufacturer source ledger and explicit
+unverified protocol areas, and `docs/MACKIE_GUIDE_ZH.md` for the current workflow.
+Consult original, separately obtained manufacturer documents before extending
+message definitions. Keep vendor manuals/installers outside Git; links and our
+own implementation only. Do not treat open-source controller scripts as a
+normative manufacturer contract or copy them into this project.
+
+Build/test with `scripts/build-mackie.ps1`. `-AudioIntegration` is opt-in and
+changes only the test process's own silent audio session. Pure tests and smoke
+must not open MIDI ports. Physical MIDI tests require an explicit selected
+pair; never auto-open EuMidi, an iMAP maintenance port or a guessed device.
+Keep touch state keyed across banking and endpoint changes. Shared Windows
+backend extensions must retain existing EUCON entry-point semantics and get
+an isolated-output EUCON regression build; never overwrite the live executable.
+
+The remaining sections define the established EUCON edition and still apply to
+any EUCON model/SDK changes.
+
 ## Mission
 
 Build Windows Fader Bridge as a device-independent EUCON application adapter

@@ -1,0 +1,81 @@
+Page,Button,MidiChannel,Note,CommandId,Label,ChineseLabel
+System,1,16,0,OpenTaskManager,Task Manager,任务管理器
+System,2,16,1,OpenTerminal,Windows Terminal,终端
+System,3,16,2,OpenRun,Run,运行
+System,4,16,3,OpenSettings,Settings,设置
+System,5,16,4,OpenFileExplorer,File Explorer,资源管理器
+System,6,16,5,OpenHomeFolder,Home Folder,个人文件夹
+System,7,16,6,OpenDownloadsFolder,Downloads,下载
+System,8,16,7,OpenDocumentsFolder,Documents,文档
+System,9,16,8,OpenCalculator,Calculator,计算器
+System,10,16,9,OpenNotepad,Notepad,记事本
+System,11,16,10,OpenSnippingTool,Snipping Tool,截图工具
+System,12,16,11,OpenQuickSettings,Quick Settings,快速设置
+System,13,16,12,OpenSearch,Search,搜索
+System,14,16,13,OpenStart,Start Menu,开始菜单
+System,15,16,14,OpenBluetoothSettings,Bluetooth,蓝牙
+System,16,16,15,OpenSystemAbout,System About,系统信息
+Window,1,16,16,ShowDesktop,Show Desktop,显示桌面
+Window,2,16,17,MinimizeForegroundWindow,Minimize Window,最小化
+Window,3,16,18,MaximizeRestoreForegroundWindow,Maximize or Restore,最大化还原
+Window,4,16,19,ToggleForegroundAlwaysOnTop,Toggle Always on Top,置顶
+Window,5,16,20,SnapWindowLeft,Snap Left,靠左
+Window,6,16,21,SnapWindowRight,Snap Right,靠右
+Window,7,16,22,SnapWindowTopHalf,Snap Top Half,上半屏
+Window,8,16,23,SnapWindowBottomHalf,Snap Bottom Half,下半屏
+Window,9,16,24,MoveWindowNextMonitor,Move to Next Monitor,下一显示器
+Window,10,16,25,MoveWindowPreviousMonitor,Move to Previous Monitor,上一显示器
+Window,11,16,26,SwitchNextWindow,Next Window,下一窗口
+Window,12,16,27,SwitchPreviousWindow,Previous Window,上一窗口
+Window,13,16,28,OpenTaskView,Task View,任务视图
+Window,14,16,29,NewVirtualDesktop,New Desktop,新桌面
+Window,15,16,30,NextVirtualDesktop,Next Desktop,下一桌面
+Window,16,16,31,PreviousVirtualDesktop,Previous Desktop,上一桌面
+Files,1,16,32,OpenThisPC,This PC,此电脑
+Files,2,16,33,OpenQuickAccess,Quick Access,快速访问
+Files,3,16,34,OpenDesktopFolder,Desktop,桌面文件夹
+Files,4,16,35,OpenPicturesFolder,Pictures,图片
+Files,5,16,36,ExplorerLargeIcons,Large Icons,大图标
+Files,6,16,37,ExplorerDetails,Details,详细信息
+Files,7,16,38,ExplorerList,List,列表
+Files,8,16,39,ExplorerContent,Content,内容
+Files,9,16,40,ExplorerPreviousFolder,Previous Folder,后退
+Files,10,16,41,ExplorerNextFolder,Next Folder,前进
+Files,11,16,42,ExplorerParentFolder,Parent Folder,上一级
+Files,12,16,43,ExplorerSearch,Search Folder,搜索文件
+Files,13,16,44,ExplorerNewFolder,New Folder,新建文件夹
+Files,14,16,45,ExplorerProperties,Properties,属性
+Files,15,16,46,ExplorerTogglePreviewPane,Toggle Preview Pane,预览窗格
+Files,16,16,47,ExplorerFitColumns,Fit Columns to Content,适应列宽
+Media,1,16,48,MediaPlayPause,Play or Pause,播放暂停
+Media,2,16,49,MediaStop,Stop,停止
+Media,3,16,50,MediaPrevious,Previous Track,上一首
+Media,4,16,51,MediaNext,Next Track,下一首
+Media,5,16,52,SystemVolumeMute,System Mute,系统静音
+Media,6,16,53,SystemVolumeDown,System Volume Down,音量降低
+Media,7,16,54,SystemVolumeUp,System Volume Up,音量提高
+Media,8,16,55,MonoAudio,Mono Audio,单声道
+Media,9,16,56,ClearSolo,Clear Solo,清除独奏
+Media,10,16,57,OpenVolumeMixer,Volume Mixer,音量合成器
+Media,11,16,58,OpenSoundSettings,Sound Settings,声音设置
+Media,12,16,59,OpenSoundOutputPanel,Sound Output Panel,选择输出
+Media,13,16,60,OpenMusicFolder,Music,音乐文件夹
+Media,14,16,61,OpenVideosFolder,Videos,视频文件夹
+Media,15,16,62,FullScreen,Full Screen,全屏
+Media,16,16,63,OpenCast,Cast,投送
+Edit,1,16,64,Undo,Undo,撤销
+Edit,2,16,65,Redo,Redo,重做
+Edit,3,16,66,Cut,Cut,剪切
+Edit,4,16,67,Copy,Copy,复制
+Edit,5,16,68,Paste,Paste,粘贴
+Edit,6,16,69,SelectAll,Select All,全选
+Edit,7,16,70,Save,Save,保存
+Edit,8,16,71,SaveAs,Save As,另存为
+Edit,9,16,72,Find,Find,查找
+Edit,10,16,73,Escape,Escape,取消
+Edit,11,16,74,Enter,Enter,确认
+Edit,12,16,75,NewTab,New Tab,新标签
+Edit,13,16,76,NextTab,Next Tab,下个标签
+Edit,14,16,77,PreviousTab,Previous Tab,上个标签
+Edit,15,16,78,ReopenClosedTab,Reopen Closed Tab,恢复标签
+Edit,16,16,79,ClipboardHistory,Clipboard History,剪贴板历史

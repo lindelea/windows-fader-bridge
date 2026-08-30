@@ -3,7 +3,29 @@
 Windows Fader Bridge is an experimental native control-surface bridge for the
 Windows per-application volume mixer. It exposes a device-independent mixer
 model through the native EUCON 2026.4 SDK; the Avid S3 and Avid Control are the
-first validation surfaces. iCON P1-Nano/Mackie Control support is also planned.
+first validation surfaces. A separate, protocol-first Mackie Control research
+host is available; iCON P1-Nano is a planned validation device, not a dependency.
+
+## Mackie Control research edition
+
+`Windows Fader Bridge for Mackie Control` runs separately from the EUCON host.
+It implements an eight-strip MCU bank plus master over an explicitly chosen
+MIDI pair, with stable Windows application/device tracks, touch-safe feedback,
+volume/balance, mute/solo/default-device selection, transport and 186 learnable
+Windows commands. It does not require the Avid SDK or iCON software to build.
+
+```powershell
+.\scripts\build-mackie.ps1
+```
+
+Output: `artifacts/mackie/Release/WindowsFaderBridge.Mackie.exe`. MIDI stays
+disconnected until the user chooses ports and connects. The Windows audio
+integration and protocol tests pass; physical controller behavior remains
+unverified. Manufacturer-specific handshakes/display extensions and HUI are
+not implemented. This is not a certified compatibility claim for all MCU devices.
+
+See the [Chinese Mackie guide](docs/MACKIE_GUIDE_ZH.md) and
+[protocol/source/verification notes](docs/MACKIE_RESEARCH.md).
 
 ## Screenshots
 

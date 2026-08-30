@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Windows.h>
+#include "AudioTrackCommandQueue.h"
 
 #include <array>
 #include <atomic>
@@ -110,6 +111,9 @@ public:
     bool QueuePan(int slot, float pan) noexcept;
     bool QueueMute(int slot, bool muted) noexcept;
     bool QueueSetDefault(int slot) noexcept;
+    // Identity-safe entry point for independent protocol adapters. Resolution
+    // happens on the audio owner thread immediately before applying the value.
+    bool QueueTrackControl(AudioTrackControl control, const std::wstring& key, float value = 0) noexcept;
     bool QueueToggleMonoAudio() noexcept;
     bool QueueToggleSolo(const std::wstring& trackKey);
     bool QueueClearSolo();
@@ -155,4 +159,5 @@ private:
     HANDLE wakeEvent_ = nullptr;
     std::thread worker_;
     std::unique_ptr<Impl> impl_;
+    AudioTrackCommandQueue trackCommands_;
 };

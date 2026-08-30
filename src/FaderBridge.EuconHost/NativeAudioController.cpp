@@ -2453,6 +2453,16 @@ bool NativeAudioController::QueueSetDefault(const int slot) noexcept
     return true;
 }
 
+bool NativeAudioController::QueueTrackControl(const AudioTrackControl control,
+    const std::wstring& key, const float value) noexcept
+{
+    if (!running_) return false;
+    try { if (!trackCommands_.Push(control, key, value)) return false; }
+    catch (...) { return false; }
+    SetEvent(wakeEvent_);
+    return true;
+}
+
 bool NativeAudioController::QueueToggleMonoAudio() noexcept
 {
     if (!running_)
@@ -2558,6 +2568,25 @@ void NativeAudioController::Run()
             : std::chrono::milliseconds(0);
         WaitForSingleObject(wakeEvent_, static_cast<DWORD>(std::clamp<long long>(
             waitDuration.count(), 0, 30)));
+
+        if (trackCommands_.HasPending()) for (const auto& command : trackCommands_.Take())
+        {
+            const auto slot = ResolveAudioTrackSlot(impl_->slots, command.key);
+            bool accepted = false;
+            if (slot >= 0)
+            {
+                switch (command.control)
+                {
+                case AudioTrackControl::Volume: accepted = impl_->ApplyVolume(slot, command.value); break;
+                case AudioTrackControl::Pan: accepted = impl_->ApplyPan(slot, command.value); break;
+                case AudioTrackControl::Mute: accepted = impl_->ApplyMute(slot, command.value > .5F); break;
+                case AudioTrackControl::SetDefault: accepted = impl_->ApplyDefaultEndpoint(slot); break;
+                }
+            }
+            if (accepted) sessionChangePending_.store(true, std::memory_order_release);
+            FB_TRACE("TRACK_COMMAND key=%ls control=%d slot=%d accepted=%d",
+                command.key.c_str(), static_cast<int>(command.control), slot, accepted);
+        }
 
         for (int slot = 0; slot < StripCount; ++slot)
         {
