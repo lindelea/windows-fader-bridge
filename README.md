@@ -14,6 +14,36 @@ These are protocol adapters, not device-specific drivers. Each edition has its
 own executable, settings and lifecycle. P1-Nano is the first Mackie test device,
 not a requirement; other MCU controllers use the same protocol implementation.
 
+## Apollo Bridge — experimental EUCON research
+
+A separate **Apollo Bridge for EUCON** is being developed for the Apollo DSP
+mixer. The current checkpoint observes UA Mixer Engine state and contains a
+standard EUCON feedback adapter with independently armed, multi-channel fader,
+mute, solo and independent left/right pan control. The development build also
+maps AUX/Cue sends to AUX, output destinations to MIX, supported native preamp
+controls to Input, and loaded plug-in parameters to Inserts child pages.
+Input also offers channel-type-specific line reference/SRC, AUX PRE/POST/MONO,
+and TALK/TB-to-monitor controls. Empty insert slots show None. Channel colors
+distinguish input families. By explicit user choice, the channel Rec button/LED
+selects UAD REC/MON (effects printed vs dry DAW feed), not DAW record arming.
+Startup/reconnection stays read only. A separate standard EUCON control-room
+processor provides monitor level, Mute, Dim, Mono, dim depth, source selection
+and TALK behind its own explicit unlock and session level ceiling. The monitor
+is never a channel-strip fader. Phantom activation and talkback to monitor
+require separate per-channel safety confirmation. Plug-in loading and guessed
+Loaded UNISON plug-ins have a separate, metadata-driven parameter area in the
+upper Channel Control hierarchy; raw UNISON gain curves are still never guessed.
+Confirmed self-authored routing refreshes
+the same channel's permission without disrupting other channels.
+**New channel/monitor features await S3 and Avid Control acceptance; this is not
+a production Apollo controller.**
+The existing Windows Fader Bridge editions remain independent and unchanged.
+
+See the [Chinese validation guide](docs/APOLLO_GUIDE_ZH.md) and
+[research / verification record](docs/APOLLO_RESEARCH.md). SDK-free tests can be
+run with `scripts/build-apollo.ps1 -CoreOnly`; the EUCON host requires a
+separately obtained Avid SDK. No vendor SDK, manual or example is redistributed.
+
 ## Windows Fader Bridge for Mackie Control
 
 A native desktop workspace in **English and Simplified Chinese**, with an
