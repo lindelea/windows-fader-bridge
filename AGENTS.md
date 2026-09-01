@@ -205,9 +205,11 @@ Build the native adapter with:
 .\scripts\build-eucon.ps1
 ```
 
-Run only one processor-side EUCON test application at a time. Do not modify or
-restart EuControl, MC_Client, WSControl, drivers, firmware, or surface settings
-unless the user explicitly authorizes that operation.
+Run only one processor-side EUCON SDK example or duplicate test application at a
+time. The production Windows Fader Bridge and UAD Console Bridge use distinct
+application/persistence identities and are expected to coexist in EuControl.
+Do not modify or restart EuControl, MC_Client, WSControl, drivers, firmware, or
+surface settings unless the user explicitly authorizes that operation.
 
 For model-affecting changes, verify at minimum:
 

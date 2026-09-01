@@ -1,5 +1,7 @@
 #include "ApolloEucon.h"
 #include "ChannelLayout.h"
+#include "ConfigLayout.h"
+#include "ConfigWriter.h"
 #include "ChannelWriter.h"
 #include "EuBatchedMeterWriter.h"
 #include "EuCon.h"
@@ -27,6 +29,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cwctype>
 #include <deque>
 #include <filesystem>
 #include <fstream>
@@ -58,7 +61,7 @@ void Log(const std::string &message)
         PWSTR folder = nullptr;
         if (FAILED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &folder)))
             return std::ofstream{};
-        const auto path = std::filesystem::path(folder) / L"Apollo Bridge" / L"EUCON" / L"logs";
+        const auto path = std::filesystem::path(folder) / L"UAD Console Bridge" / L"EUCON" / L"logs";
         CoTaskMemFree(folder);
         std::error_code error;
         std::filesystem::create_directories(path, error);
@@ -107,10 +110,67 @@ void Switch(EuPrimitiveControl &p)
 {
     Initialize(p, kTYP_Int, 2);
     Check(p.LoadValueTableInterpolated(0, 1), "Switch table");
+    Check(p.LoadValueAt(0, L"OFF", L"OFF", L"Off"), "Switch off text");
+    Check(p.LoadValueAt(1, L"ON", L"ON", L"On"), "Switch on text");
     auto *button = dynamic_cast<EuPrimitiveSwitch *>(&p);
     if (!button)
         throw std::runtime_error("Unexpected switch primitive type");
     Check(button->SetSwitchMode(kSWITCH_MultiState), "Switch mode");
+}
+void LatchSwitch(EuPrimitiveControl &p)
+{
+    Initialize(p, kTYP_Int, 2);
+    Check(p.LoadValueTableInterpolated(0, 1), "Latch switch table");
+    Check(p.LoadValueAt(0, L"OFF", L"OFF", L"Off"), "Latch switch off text");
+    Check(p.LoadValueAt(1, L"ON", L"ON", L"On"), "Latch switch on text");
+    auto *button = dynamic_cast<EuPrimitiveSwitch *>(&p);
+    if (!button)
+        throw std::runtime_error("Unexpected latch switch primitive type");
+    Check(button->SetSwitchMode(kSWITCH_MomentaryLatch), "Latch switch mode");
+}
+void OneShotSwitch(EuPrimitiveControl &p)
+{
+    // Avid one-shot switches have one value and no persistent state. The
+    // activation callback itself is the action, regardless of whether the
+    // surface chooses the physical press or release edge.
+    Initialize(p, kTYP_Int, 1);
+    auto *button = dynamic_cast<EuPrimitiveSwitch *>(&p);
+    if (!button)
+        throw std::runtime_error("Unexpected one-shot switch primitive type");
+    Check(button->SetSwitchMode(kSWITCH_OneShot), "One-shot switch mode");
+}
+struct ValueText
+{
+    std::wstring short4, short8, full;
+};
+ValueText DbValueText(float value, float minimum)
+{
+    if (minimum <= -120.0F && value <= minimum + 0.001F)
+        return {L"-INF", L"-INF", L"-Infinity dB"};
+    if (std::abs(value) < 0.05F)
+        value = 0.0F;
+    wchar_t short4[16]{}, short8[16]{}, full[32]{};
+    swprintf_s(short4, L"%+.0fdB", value);
+    swprintf_s(short8, L"%+.1fdB", value);
+    swprintf_s(full, L"%+.1f dB", value);
+    if (value == 0.0F)
+    {
+        wcscpy_s(short4, L"0dB");
+        wcscpy_s(short8, L"0.0dB");
+        wcscpy_s(full, L"0.0 dB");
+    }
+    return {short4, short8, full};
+}
+void LoadValueText(EuPrimitiveControl &primitive, NEuCon::uint16 index, const ValueText &text,
+                   const char *operation)
+{
+    Check(primitive.LoadValueAt(index, text.short4, text.short8, text.full), operation);
+}
+void LoadDbValueText(EuPrimitiveControl &primitive, const std::vector<float> &values, float minimum,
+                     const char *operation)
+{
+    for (size_t i = 0; i < values.size(); ++i)
+        LoadValueText(primitive, static_cast<NEuCon::uint16>(i), DbValueText(values[i], minimum), operation);
 }
 void CheckTextResult(EuPrimitiveControl &p, tERR result, NEuCon::uint16 index, const std::wstring &text,
                      const char *operation)
@@ -160,6 +220,18 @@ void RawSwitch(EuPrimitiveControl &p)
     Switch(p);
     Check(static_cast<EuPrimitiveSwitch &>(p).SetSwitchMode(kSWITCH_Raw), "Raw press/release mode");
 }
+void MarkConfigPage(EuControlKnobCellArray &array, NEuCon::uint32 member)
+{
+    Check(array.NewConfigPage(member), "Config page marker");
+    std::vector<NEuCon::uint32> actual;
+    Check(array.GetConfigPages(actual), "Config page readback");
+    if (std::count(actual.begin(), actual.end(), member) != 1)
+        throw std::runtime_error("Config page member readback mismatch");
+    NEuCon::uint32 id = 0;
+    Check(array.GetId(id), "Config array ID");
+    Log("config-page control=" + std::to_string(id) + " member=" + std::to_string(member) +
+        " readback=1");
+}
 void ToggleFeedback(EuControl &control, NEuCon::uint32 button, NEuCon::uint32 led, const Parameter &p)
 {
     Check(Primitive(control, button).SetCurrentIndex(p.value.Bool() ? 1 : 0), "Switch feedback");
@@ -183,7 +255,7 @@ struct Event
     tVisibilityHandle handle = kEuInvalidVisibilityHandle;
     tEuMeterFormat format = kEuInvalidMeterFormat;
     DWORD thread = 0;
-    uint64_t epoch = 0;
+    uint64_t epoch = 0, configEpoch = 0, configModel = 0;
     double value = 0;
     bool decoded = false;
     tERR decodeResult = kERR_OK;
@@ -195,15 +267,26 @@ struct Inbox
     std::deque<Event> events;
     std::atomic<bool> overflow = false;
     std::atomic<uint64_t> epoch = 0;
+    std::function<void()> wake;
+    bool wakePending = false;
     void Push(Event event) noexcept
     {
         try
         {
-            std::lock_guard<std::mutex> lock(mutex);
-            if (events.size() < 8192)
-                events.push_back(event);
-            else
-                overflow = true;
+            bool notify = false;
+            {
+                std::lock_guard<std::mutex> lock(mutex);
+                if (events.size() < 8192)
+                {
+                    events.push_back(event);
+                    if (!wakePending)
+                        notify = wakePending = true;
+                }
+                else
+                    overflow = true;
+            }
+            if (notify && wake)
+                wake();
         }
         catch (...)
         {
@@ -215,6 +298,7 @@ struct Inbox
         std::lock_guard<std::mutex> lock(mutex);
         std::deque<Event> result;
         result.swap(events);
+        wakePending = false;
         return result;
     }
 };
@@ -294,7 +378,12 @@ class ControlRoom final : public EuProcessor
                 table_.push_back(low + (high - low) * static_cast<float>(i) / static_cast<float>(steps));
             Initialize(knob, kTYP_Float, static_cast<NEuCon::uint16>(table_.size()));
             Check(knob.LoadValueTable(table_, 1), "Monitor attenuation table");
+            LoadDbValueText(knob, table_, low, "Monitor attenuation text");
             knob.MakeConfirmationCallback(true);
+            auto *levelRing = dynamic_cast<EuPrimitiveKnob *>(&knob);
+            if (!levelRing)
+                throw std::runtime_error("Missing monitor level knob");
+            Check(levelRing->SetPositionRingMode(kRingThermometerLeft), "Monitor level ring");
             RawSwitch(Primitive(level_, EuControlKnob::kID_KnobTouchSense));
             Label(Primitive(level_, EuControlKnob::kID_KnobLabelDisplay), L"Mix");
             hasMute_ = WritableButton(m, MonitorField::Mute);
@@ -327,7 +416,12 @@ class ControlRoom final : public EuProcessor
                 auto &depth = Primitive(dimAmount_, EuControlKnob::kID_Knob);
                 Initialize(depth, kTYP_Float, static_cast<NEuCon::uint16>(MonitorDimTable().size()));
                 Check(depth.LoadValueTable(MonitorDimTable(), 0), "Dim depth table");
+                LoadDbValueText(depth, MonitorDimTable(), MonitorDimTable().front(), "Dim depth text");
                 depth.MakeConfirmationCallback(true);
+                auto *dimRing = dynamic_cast<EuPrimitiveKnob *>(&depth);
+                if (!dimRing)
+                    throw std::runtime_error("Missing monitor DIM knob");
+                Check(dimRing->SetPositionRingMode(kRingThermometerLeft), "Monitor DIM ring");
                 RawSwitch(Primitive(dimAmount_, EuControlKnob::kID_KnobTouchSense));
                 Label(Primitive(dimAmount_, EuControlKnob::kID_KnobLabelDisplay), L"Dim");
             }
@@ -445,7 +539,7 @@ class ControlRoom final : public EuProcessor
     bool Dispatch(const Event &event)
     {
         if (event.tag != tag_ || !event.decoded || !event.epoch || event.epoch != controller_.Epoch() ||
-            std::chrono::steady_clock::now() - event.at >= std::chrono::milliseconds(500))
+            std::chrono::steady_clock::now() - event.at >= std::chrono::seconds(5))
             return false;
         const int slot = Slot(event.control, event.member, event.primitive);
         if (slot < 0)
@@ -629,15 +723,16 @@ class ControlRoom final : public EuProcessor
     std::atomic<NEuCon::uint16> feedback_[11]{};
     std::atomic<NEuCon::uint16> ceilingIndex_ = 0;
 };
+#include "ConfigKnob.h"
 #include "ChannelKnobSets.h"
 #include "UpperKnobSets.h"
 class Strip final : public EuProcessor
 {
   public:
-    Strip(const Channel &channel, int tag, int order, Inbox &inbox, EuNode &node)
+    Strip(const Channel &channel, int tag, int order, Inbox &inbox, EuNode &node, bool config = false)
         : tag_(tag), inbox_(inbox), fader_(this), name_(this), number_(this), format_(this), solo_(this),
-          rec_(this), pan_(this), meter_(this), outputName_(this), inputName_(this), knobs_(*this, node),
-          monitorKnobs_(*this), upper_(*this, tag)
+          rec_(this), pan_(this), meter_(this), outputName_(this), inputName_(this), knobs_(*this, node, config),
+          monitorKnobs_(*this, config), upper_(*this, tag)
     {
         controls_.reserve(8);
         panIds_.reserve(2);
@@ -798,6 +893,8 @@ class Strip final : public EuProcessor
         event.index = index;
         event.thread = GetCurrentThreadId();
         event.epoch = control == MonitorKnobSet::Id ? monitorEpoch_.load() : channelEpoch_.load();
+        event.configEpoch = configEpoch_.load();
+        if (control == MonitorKnobSet::Id) event.configModel = monitorKnobs_.Revision();
         event.at = std::chrono::steady_clock::now();
         if (affected &&
             ((control == Fader && primitive == EuControlFader::kID_Slider) ||
@@ -820,6 +917,14 @@ class Strip final : public EuProcessor
             event.value = value;
             event.decoded = event.decodeResult == kERR_OK && (value == 0 || value == 1);
         }
+        else if (affected && control == Pan && primitive == EuControlKnobCell::kID_KnobTopSwitch)
+        {
+            // OneShot always reads as zero. The callback itself is the action;
+            // member identifies the active mono/left/right pan peer.
+            event.decodeResult = kERR_OK;
+            event.value = 0;
+            event.decoded = true;
+        }
         inbox_.Push(event); // No transport, logging or SDK pointer escapes the callback.
     }
     bool Touched() const
@@ -827,15 +932,19 @@ class Strip final : public EuProcessor
         return touched_ || leftTouched_ || rightTouched_ || knobs_.Touched() || monitorKnobs_.Touched();
     }
     bool Dispatch(const Event &event, const Channel &channel, ChannelController &controller,
-                  const std::optional<Monitor> &monitor, MonitorController &monitorController)
+                  const std::optional<Monitor> &monitor, MonitorController &monitorController,
+                  ConfigController *configuration = nullptr)
     {
         if (event.control == MonitorKnobSet::Id)
-            return monitor && monitorKnobs_.Dispatch(event, *monitor, monitorController);
+            return monitor && monitorKnobs_.Dispatch(event, *monitor, monitorController, configuration);
+        if (knobs_.IsConfig(event.control, event.member))
+            return configuration && knobs_.DispatchConfig(event, channel, *configuration);
+        if (knobs_.IsReadOnlyConfig(event.control, event.member))
+            return false; // A preview gesture cannot write or revoke channel authorization.
         if (event.epoch && event.epoch == controller.Epoch(channel.key) &&
-            std::chrono::steady_clock::now() - event.at >= std::chrono::milliseconds(500))
+            std::chrono::steady_clock::now() - event.at >= std::chrono::seconds(5))
         {
-            controller.Disarm(channel.key);
-            Log("Expired surface gesture discarded");
+            Log("Expired channel gesture discarded; permission preserved");
             return false;
         }
         if (!event.decoded || !event.epoch || event.epoch != controller.Epoch(channel.key))
@@ -852,7 +961,9 @@ class Strip final : public EuProcessor
             field = ChannelField::Mute;
         else if (event.control == Solo && event.primitive == EuControlSwitch::kID_Switch)
             field = ChannelField::Solo;
-        else if (event.control == Pan && event.primitive == EuControlKnobCell::kID_Knob)
+        else if (event.control == Pan &&
+                 (event.primitive == EuControlKnobCell::kID_Knob ||
+                  event.primitive == EuControlKnobCell::kID_KnobTopSwitch))
         {
             if (event.member == leftMember_)
                 field = ChannelField::PanLeft;
@@ -863,9 +974,11 @@ class Strip final : public EuProcessor
             return false; // Touch and the runtime's SEL peer switch never write.
         const bool boolean = *field == ChannelField::Mute || *field == ChannelField::Solo;
         const bool pan = *field == ChannelField::PanLeft || *field == ChannelField::PanRight;
+        const bool panCenter = pan && event.primitive == EuControlKnobCell::kID_KnobTopSwitch;
         return controller.Submit(channel.key, *field,
                                  boolean ? Json::Parse(event.value != 0 ? "true" : "false")
-                                         : ControlNumber(pan ? event.value / 100.0 : event.value),
+                                         : ControlNumber(pan ? (panCenter ? 0.0 : event.value / 100.0)
+                                                             : event.value),
                                  event.epoch);
     }
     int Tag() const
@@ -940,6 +1053,38 @@ class Strip final : public EuProcessor
     bool UpperMonitorForTest() const
     {
         return upper_.ChildForTest(UpperFunction::ControlRoom) != nullptr;
+    }
+    void ApplyGlobalConfig(const Snapshot &state, uint64_t epoch = 0)
+    {
+        configEpoch_ = state.connected ? epoch : 0;
+        knobs_.ApplyGlobalConfig(state.globalConfig, state.connected);
+    }
+    bool ConfigMarkersForTest()
+    {
+        return knobs_.ConfigMarkersForTest() && monitorKnobs_.ConfigMarkersForTest();
+    }
+    bool GlobalConfigReadbackForTest(const std::string &key, const std::wstring &expected)
+    {
+        return knobs_.GlobalConfigReadbackForTest(key, expected);
+    }
+    bool ConfigValueForTest(const std::string &key, const std::wstring &expected) const
+    { return knobs_.ConfigValueForTest(key, expected); }
+    bool RingModesForTest() const
+    { return knobs_.RingModesForTest() && monitorKnobs_.RingModesForTest(); }
+    bool PanResetSwitchesForTest() const
+    {
+        for (const auto &cell : panCells_)
+        {
+            auto &primitive = Primitive(*cell, EuControlKnobCell::kID_KnobTopSwitch);
+            auto *button = dynamic_cast<EuPrimitiveSwitch *>(&primitive);
+            tSWITCH mode = kSWITCH_NumSwitchmodes;
+            NEuCon::uint16 size = 0;
+            if (!button || button->GetSwitchMode(mode) != kERR_OK || mode != kSWITCH_OneShot ||
+                primitive.GetValueTableSize(size) != kERR_OK || size != 1)
+                return false;
+        }
+        return panCells_.size() ==
+               static_cast<size_t>((panMask_ & 1 ? 1 : 0) + (panMask_ & 2 ? 1 : 0));
     }
     NEuCon::uint16 RecIndexForTest()
     {
@@ -1204,6 +1349,7 @@ class Strip final : public EuProcessor
                                       index == 0 ? EuLayoutPan::kNAM_LeftPan : EuLayoutPan::kNAM_RightPan),
                       "Native pan semantic");
                 RawSwitch(Primitive(*knob, EuControlKnobCell::kID_KnobTouchSense));
+                OneShotSwitch(Primitive(*knob, EuControlKnobCell::kID_KnobTopSwitch));
                 auto *rotary = dynamic_cast<EuPrimitiveKnob *>(&p);
                 if (!rotary)
                     throw std::runtime_error("Missing rotary primitive");
@@ -1257,6 +1403,7 @@ class Strip final : public EuProcessor
     MonitorKnobSet monitorKnobs_;
     UpperDirectory upper_;
     std::atomic<uint64_t> monitorEpoch_{0};
+    std::atomic<uint64_t> configEpoch_{0};
     std::string lastOutput_, lastInput_;
     std::vector<std::unique_ptr<EuControlKnobCell>> panCells_;
     std::vector<NEuCon::uint32> panIds_;
@@ -1285,18 +1432,23 @@ struct ApolloEucon::Impl
     uint64_t eventCount = 0;
     ChannelController &controller;
     MonitorController &monitorController;
-    explicit Impl(const Snapshot &initial, ChannelController &control, MonitorController &monitor)
-        : controller(control), monitorController(monitor)
+    const bool experimentalConfig;
+    ConfigController *configuration;
+    explicit Impl(const Snapshot &initial, ChannelController &control, MonitorController &monitor, bool config,
+                  ConfigController *settings, std::function<void()> wakeOwner)
+        : controller(control), monitorController(monitor), experimentalConfig(config), configuration(settings)
     {
         try
         {
+            inbox.wake = std::move(wakeOwner);
             Check(EuConManager::Initialize(), "EUCON initialize");
             manager = true;
+            Log(std::string("experimental-config=") + (config ? "1 separately-confirmed-writes=1" : "0"));
             node = std::make_unique<Node>(inbox);
             Check(node->Freeze(), "Initial node freeze");
             Check(node->SetPersistenceID(L"Lindelea.ApolloBridge.EUCON.v1"), "Node persistence");
-            Check(node->SetSimpleFriendlyName(L"Apollo Bridge for EUCON"), "Node friendly name");
-            Check(node->SetUserVisibleName(L"Apollo Bridge for EUCON"), "Node visible name");
+            Check(node->SetSimpleFriendlyName(L"UAD Console Bridge for EUCON"), "Node friendly name");
+            Check(node->SetUserVisibleName(L"UAD Console Bridge for EUCON"), "Node visible name");
             Check(node->SetAttribute2(kATRIBID_ProcessorMeterAPIVersion, kMeterAPIVersion_3_1), "Meter API");
             int order = 0;
             for (const auto &c : SurfaceChannels(initial))
@@ -1345,7 +1497,7 @@ struct ApolloEucon::Impl
     }
     void Add(const Channel &channel, int order)
     {
-        auto strip = std::make_unique<Strip>(channel, nextTag++, order, inbox, *node);
+        auto strip = std::make_unique<Strip>(channel, nextTag++, order, inbox, *node, experimentalConfig);
         const auto inserted = strips.emplace(channel.key, std::move(strip));
         if (!inserted.second)
             throw std::runtime_error("Duplicate track registration");
@@ -1385,7 +1537,7 @@ struct ApolloEucon::Impl
                     const auto it = strips.find(c.key);
                     if (it != strips.end() && it->second->Tag() == event.tag)
                     {
-                        queued = it->second->Dispatch(event, c, controller, monitor, monitorController);
+                        queued = it->second->Dispatch(event, c, controller, monitor, monitorController, configuration);
                         break;
                     }
                 }
@@ -1492,6 +1644,7 @@ struct ApolloEucon::Impl
             {
                 it->second->SetEpoch(controller.Epoch(c.key));
                 it->second->Apply(controller.Feedback(c), topology && touched ? -1 : order);
+                it->second->ApplyGlobalConfig(state, configuration ? configuration->Epoch() : 0);
                 it->second->ApplyMonitor(
                     monitor ? std::optional<Monitor>(monitorController.Feedback(*monitor)) : std::nullopt,
                     monitorController.Epoch());
@@ -1499,7 +1652,10 @@ struct ApolloEucon::Impl
         }
         for (auto &s : strips)
             if (!desired.count(s.first))
+            {
+                s.second->ApplyGlobalConfig(Snapshot{});
                 s.second->Unavailable();
+            }
         // No application/inbox mutex may be held while the writer owns its lock.
         EuBatchedMeterWriter writer(*node);
         for (auto &strip : strips)
@@ -1530,8 +1686,11 @@ struct ApolloEucon::Impl
         }
     }
 };
-ApolloEucon::ApolloEucon(const Snapshot &initial, ChannelController &controller, MonitorController &monitor)
-    : impl_(std::make_unique<Impl>(initial, controller, monitor))
+ApolloEucon::ApolloEucon(const Snapshot &initial, ChannelController &controller, MonitorController &monitor,
+                         bool experimentalConfig, ConfigController *configuration,
+                         std::function<void()> wakeOwner)
+    : impl_(std::make_unique<Impl>(initial, controller, monitor, experimentalConfig, configuration,
+                                  std::move(wakeOwner)))
 {
 }
 ApolloEucon::~ApolloEucon() = default;
@@ -1612,6 +1771,16 @@ std::string RunEuconTextTests()
         // Exercise explicit short/long variants, repeated updates, clearing and
         // reattachment. A single full string must not silently replace CR.
         const auto crText = UpperDirectoryLabels(UpperFunction::ControlRoom);
+        {
+            EuControlTextDisplay explicitTable(&processor);
+            auto &p = Primitive(explicitTable, EuControlTextDisplay::kID_TextDisplay);
+            Label(p, L"");
+            const auto result = p.LoadValueAt(0, crText[0], crText[1], crText[2]);
+            Check(result, "Explicit label table regression");
+            if (!UpperLabelMatches(p, crText))
+                throw std::runtime_error("Explicit label table did not preserve CR variants");
+            ++checks;
+        }
         for (bool available : {true, true, false, false, true})
         {
             const auto text = UpperDirectoryLabels(UpperFunction::ControlRoom, available);
@@ -1636,6 +1805,36 @@ std::string RunEuconTextTests()
             UpdateText(knob, label, "Text test numeric display", 1);
             verify(knob, 1, label);
         }
+        // Knob temporary text comes from the primitive value table. Verify the
+        // exact 4/8/full strings supplied to S3-class displays, including the
+        // professional dB unit and the fader-floor representation.
+        EuControlKnob valueControl(&processor);
+        auto &valueKnob = Primitive(valueControl, EuControlKnob::kID_Knob);
+        const std::vector<float> dbValues{-144.0F, -12.0F, 0.0F, 4.0F};
+        Initialize(valueKnob, kTYP_Float, static_cast<NEuCon::uint16>(dbValues.size()));
+        Check(valueKnob.LoadValueTable(dbValues, 1), "Value text numeric table");
+        LoadDbValueText(valueKnob, dbValues, dbValues.front(), "Value text dB table");
+        const auto verifyVariants = [&](EuPrimitiveControl &p, NEuCon::uint16 index,
+                                        const ValueText &expected) {
+            const std::array<std::pair<tSTRLEN, const std::wstring *>, 3> widths{{
+                {kSTRLEN_4, &expected.short4}, {kSTRLEN_8, &expected.short8}, {kSTRLEN_Long, &expected.full}}};
+            for (const auto &[width, text] : widths)
+            {
+                tEuString actual;
+                Check(p.GetValueAt(index, actual, width), "Value text readback");
+                if (actual != *text)
+                    throw std::runtime_error("Value text width mismatch");
+                ++checks;
+            }
+        };
+        for (size_t i = 0; i < dbValues.size(); ++i)
+            verifyVariants(valueKnob, static_cast<NEuCon::uint16>(i),
+                           DbValueText(dbValues[i], dbValues.front()));
+        EuControlKnobCell switchCell(&processor);
+        auto &switchPrimitive = Primitive(switchCell, EuControlKnobCell::kID_LowerSwitch);
+        Switch(switchPrimitive);
+        verifyVariants(switchPrimitive, 0, {L"OFF", L"OFF", L"Off"});
+        verifyVariants(switchPrimitive, 1, {L"ON", L"ON", L"On"});
         // Exercise the real strip/knob-set construction and incremental updates
         // without registering any application or accessing an audio engine.
         Inbox testInbox;
@@ -1644,10 +1843,11 @@ std::string RunEuconTextTests()
         AddMonitorFixture(fixture);
         const auto model = BuildSnapshot(fixture);
         int tag = 200;
+        for (const bool config : {false, true})
         for (auto channel : model.channels)
         {
             ++tag;
-            Strip strip(channel, tag, tag, testInbox, testNode);
+            Strip strip(channel, tag, tag, testInbox, testNode, config);
             Check(testNode.Freeze(), "Model test membership freeze");
             const auto registration = testNode.RegisterProcessor(strip);
             if (registration != kERR_OK)
@@ -1664,6 +1864,12 @@ std::string RunEuconTextTests()
             std::unique_ptr<Strip, decltype(detach)> membership(&strip, detach);
             Check(testNode.Thaw(), "Model test membership thaw");
             strip.Apply(channel, tag, false);
+            if (!strip.RingModesForTest())
+                throw std::runtime_error("Channel knob ring mode does not match its control semantics");
+            ++checks;
+            if (!strip.PanResetSwitchesForTest())
+                throw std::runtime_error("Pan knob-top reset switches do not match mono/stereo pan cells");
+            ++checks;
             if (!strip.UpperLinksForTest())
                 throw std::runtime_error("Upper directory does not reference existing mix pages");
             ++checks;
@@ -1699,6 +1905,30 @@ std::string RunEuconTextTests()
                 ++checks;
             }
             strip.ApplyMonitor(model.monitors.front(), 0);
+            if (!strip.RingModesForTest())
+                throw std::runtime_error("Monitor knob ring mode does not match its control semantics");
+            ++checks;
+            if (!strip.ConfigMarkersForTest())
+                throw std::runtime_error("Normal/config page markers diverged");
+            ++checks;
+            if (config)
+            {
+                auto preview = model;
+                preview.connected = true;
+                preview.globalConfig["SampleRate"] = "96 kHz";
+                strip.ApplyGlobalConfig(preview);
+                if (!strip.GlobalConfigReadbackForTest("SampleRate", L"96 KHZ"))
+                    throw std::runtime_error("Global Config preview is missing or mutable");
+                preview.globalConfig["SampleRate"] = "48 kHz";
+                strip.ApplyGlobalConfig(preview);
+                if (!strip.GlobalConfigReadbackForTest("SampleRate", L"48 KHZ"))
+                    throw std::runtime_error("Global Config feedback did not update");
+                preview.connected = false;
+                strip.ApplyGlobalConfig(preview);
+                if (!strip.GlobalConfigReadbackForTest("SampleRate", L"OFFLINE"))
+                    throw std::runtime_error("Disconnected Config preview retained a value");
+                checks += 3;
+            }
             if (!strip.UpperMonitorForTest() || !strip.UpperLinksForTest())
                 throw std::runtime_error("Monitor extension disturbed standard or quick-control pages");
             ++checks;
@@ -1708,6 +1938,10 @@ std::string RunEuconTextTests()
             strip.ApplyMonitor(std::nullopt, 0);
             if (strip.UpperMonitorForTest() || !strip.UpperLinksForTest())
                 throw std::runtime_error("Monitor extension removal left stale references");
+            ++checks;
+            strip.ApplyMonitor(model.monitors.front(), 0);
+            if (!strip.UpperMonitorForTest() || !strip.ConfigMarkersForTest())
+                throw std::runtime_error("Monitor reattachment retained obsolete Config markers");
             ++checks;
             if (channel.path == "/devices/3/inputs/0")
             {
@@ -1720,6 +1954,28 @@ std::string RunEuconTextTests()
                 if (!strip.UpperLinksForTest())
                     throw std::runtime_error("UNISON removal left stale directory children");
                 checks += 2;
+            }
+            if (config && channel.path == "/devices/3/inputs/0")
+            {
+                auto configFixture = fixture;
+                AddConfigurationFixture(configFixture);
+                auto configured = BuildSnapshot(configFixture);
+                auto selected = configured.channels.front();
+                strip.Apply(selected, tag, false);
+                strip.ApplyMonitor(configured.monitors.front(), 0);
+                if (!strip.ConfigMarkersForTest() || !strip.UpperLinksForTest() ||
+                    !strip.ConfigValueForTest("/SampleRate", L"48 kHz") ||
+                    !strip.ConfigValueForTest(selected.path + "/effects/2/Preset", L"NEUTRAL") ||
+                    !strip.ConfigValueForTest(selected.path + "/effects/0/EffectName", L"NONE"))
+                    throw std::runtime_error("Expanded Config model/readback failed");
+                const auto pluginPage = strip.PageIdForTest(ChannelFunction::Inserts);
+                configFixture["/"].object["properties"].object["SampleRate"].object["value"] = Json::Parse("96000");
+                configured = BuildSnapshot(configFixture);
+                strip.Apply(configured.channels.front(), tag, false);
+                if (!strip.ConfigValueForTest("/SampleRate", L"96 KHZ") ||
+                    pluginPage != strip.PageIdForTest(ChannelFunction::Inserts))
+                    throw std::runtime_error("Config feedback rebuilt unrelated plug-in page");
+                checks += 5;
             }
             Check(testNode.Freeze(), "Model test removal freeze");
             Check(testNode.UnregisterProcessor(strip), "Model test processor unregister");

@@ -1,6 +1,7 @@
 #pragma once
 #include "Model.h"
 #include <deque>
+#include <functional>
 #include <tuple>
 
 namespace apollo
@@ -77,6 +78,9 @@ bool SameExtensionShape(const Channel &a, const Channel &b);
 std::vector<ChannelAddress> ExtensionAddresses(const Channel &channel);
 bool ControlEligible(const Channel &channel);
 bool SameControlTarget(const Channel &a, const Channel &b);
+// Permission follows a stable logical channel, while callback epochs and field
+// validation follow the current control shape.
+bool SamePermissionTarget(const Channel &a, const Channel &b);
 // Strictly typed, range checked ordinary-channel writes; no arbitrary paths or
 // strings.
 std::string ChannelCommand(const Channel &channel, ChannelAddress field, const Json &value);
@@ -103,9 +107,17 @@ class ChannelQueue
     bool Valid(const Snapshot &snapshot) const;
     uint64_t Submit(ChannelAddress field, const Json &value, uint64_t epoch);
     std::optional<ChannelRequest> Take();
+    // Remove the oldest request accepted by ready. This lets the transport
+    // rate-limit one continuous parameter without delaying a different fader,
+    // pan or switch queued behind it.
+    std::optional<ChannelRequest> TakeReady(const std::function<bool(const ChannelRequest &)> &ready);
     uint64_t Epoch() const
     {
         return armed_ ? epoch_ : 0;
+    }
+    uint64_t Generation() const
+    {
+        return generation_;
     }
     const Channel &Target() const
     {

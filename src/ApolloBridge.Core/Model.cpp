@@ -1,4 +1,6 @@
 #include "Model.h"
+#include "ConfigLayout.h"
+#include "Configuration.h"
 #include "Protocol.h"
 #include <algorithm>
 #include <cmath>
@@ -208,6 +210,7 @@ AudioFormat DestinationFormat(const NodeMap &nodes, const std::string &device, c
 Snapshot BuildSnapshot(const NodeMap &nodes)
 {
     Snapshot result;
+    result.globalConfig = ReadGlobalConfig(Node(nodes, "/"));
     std::set<std::string> identities;
     for (const auto &device : Children(Node(nodes, "/devices")))
     {
@@ -507,6 +510,9 @@ Snapshot BuildSnapshot(const NodeMap &nodes)
             result.monitors.push_back(std::move(m));
         }
     }
+    result.configuration = BuildConfiguration(nodes);
+    for (auto &c : result.channels) c.configuration = result.configuration;
+    for (auto &m : result.monitors) m.configuration = result.configuration;
     return result;
 }
 std::vector<Channel> SurfaceChannels(const Snapshot &snapshot)
@@ -609,6 +615,9 @@ std::vector<std::string> SubscriptionPaths(const NodeMap &nodes)
                                                   "PGADisabledInLineMode",
                                                   "EffectInstance",
                                                   "EffectName",
+                                                  "Preset",
+                                                  "FuncSwitchMode",
+                                                  "MirrorsToDigital",
                                                   "Power",
                                                   "NormalizedValue",
                                                   "StringValue",
@@ -621,7 +630,10 @@ std::vector<std::string> SubscriptionPaths(const NodeMap &nodes)
     std::vector<std::string> paths;
     for (const auto &node : nodes)
         for (const auto &property : node.second.At("properties").object)
-            if (allowed.count(property.first) && property.second.Has("value"))
+            if ((allowed.count(property.first) ||
+                 (node.first == "/" && std::any_of(GlobalConfigEntries.begin(), GlobalConfigEntries.end(),
+                     [&](const auto &entry) { return property.first == entry.property; }))) &&
+                property.second.Has("value"))
                 paths.push_back((node.first == "/" ? "" : node.first) + "/" + property.first + "/value");
     if (paths.size() > 32768)
         throw std::runtime_error("Apollo subscription limit exceeded");

@@ -3,12 +3,14 @@
 #include <chrono>
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
 
 namespace apollo
 {
+struct Configuration;
 using NodeMap = std::map<std::string, Json>;
 struct Parameter
 {
@@ -68,6 +70,7 @@ struct Channel
     std::vector<Insert> inserts;
     std::vector<std::string> insertSlots;
     std::vector<Meter> meters;
+    std::shared_ptr<const Configuration> configuration;
 };
 struct Monitor
 {
@@ -81,6 +84,7 @@ struct Monitor
     std::optional<Parameter> talkbackMaster, talkbackToMonitor, talkbackMicSelect;
     // Raw indexed meter feeds are not claimed to have surround speaker roles.
     std::vector<Meter> meters;
+    std::shared_ptr<const Configuration> configuration;
 };
 struct Snapshot
 {
@@ -93,6 +97,8 @@ struct Snapshot
     std::string status = "Not connected";
     std::vector<Channel> channels;
     std::vector<Monitor> monitors;
+    std::map<std::string, std::string> globalConfig;
+    std::shared_ptr<const Configuration> configuration;
 };
 std::vector<std::string> Children(const Json &node);
 bool NumericSlot(const std::string &slot);

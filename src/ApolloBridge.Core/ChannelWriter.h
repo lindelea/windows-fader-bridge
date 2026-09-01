@@ -19,8 +19,18 @@ class ChannelWriteClient
     // request sends no set. No subscriptions share this command connection.
     std::optional<Json> Apply(const ChannelRequest &request,
                               const std::function<bool(const Channel &)> &authorize);
+    // Low-latency path for ordinary mixing controls. Identity, shape and range
+    // are checked from the observer snapshot immediately before dispatch; the
+    // observer subscription remains the authoritative feedback path.
+    std::optional<Json> ApplyRealtime(const ChannelRequest &request,
+                                      const std::function<bool(const Channel &)> &authorize);
+    void CheckRealtimeReplies()
+    {
+        DrainReplies(0);
+    }
 
   private:
+    void DrainReplies(int milliseconds);
     ReadOnlyClient client_;
 };
 struct ControlStatus
@@ -39,6 +49,7 @@ class ChannelController
     void Disarm();
     void Disarm(const std::string &key);
     void UnlockSafety(const std::string &key);
+    bool Tracks(const std::string &key) const;
     uint64_t Epoch(const std::string &key) const;
     void Validate();
     uint64_t Epoch() const
@@ -66,6 +77,7 @@ class ChannelController
         std::optional<ChannelRequest> transition;
         std::chrono::steady_clock::time_point transitionAt;
         uint64_t metadataRevision = 0;
+        std::map<ChannelAddress, std::chrono::steady_clock::time_point> lastDispatch;
     };
     void Fail(const std::string &key, const std::string &message);
     void UpdateEpoch();

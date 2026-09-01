@@ -7,6 +7,26 @@ namespace apollo
 using Clock = std::chrono::steady_clock;
 namespace
 {
+bool ContinuousField(ChannelAddress field)
+{
+    switch (field.kind)
+    {
+    case ChannelField::Level:
+    case ChannelField::PanLeft:
+    case ChannelField::PanRight:
+    case ChannelField::SendLevel:
+    case ChannelField::SendPan:
+    case ChannelField::PreampGain:
+    case ChannelField::InsertValue:
+    case ChannelField::InsertStep:
+    case ChannelField::UnisonValue:
+    case ChannelField::UnisonStep:
+        return true;
+    default:
+        return false;
+    }
+}
+
 void ReadFeature(ReadOnlyClient &client, NodeMap &nodes, const Channel &target, ChannelAddress a)
 {
     const auto read = [&](const std::string &path) -> const Json & {
@@ -88,6 +108,35 @@ void ReadFeature(ReadOnlyClient &client, NodeMap &nodes, const Channel &target, 
     }
 }
 } // namespace
+void ChannelWriteClient::DrainReplies(int milliseconds)
+{
+    bool first = true;
+    while (auto reply = client_.Poll(first ? milliseconds : 0))
+    {
+        first = false;
+        if (reply->Has("error"))
+            throw std::runtime_error("Apollo rejected channel write");
+    }
+}
+
+std::optional<Json> ChannelWriteClient::ApplyRealtime(
+    const ChannelRequest &request, const std::function<bool(const Channel &)> &authorize)
+{
+    const auto command = ChannelCommand(request.target, request.field, request.value);
+    if (Clock::now() - request.created >= std::chrono::seconds(5))
+        return {};
+    if (!authorize || !authorize(request.target))
+        return {};
+
+    // Consume acknowledgements from earlier writes so a long gesture cannot
+    // grow an unbounded reply queue. Do not put discovery/readback round trips
+    // in front of audible control changes.
+    DrainReplies(0);
+    client_.SendBytes(command);
+    DrainReplies(ContinuousField(request.field) ? 0 : 5);
+    return request.value;
+}
+
 std::optional<Json> ChannelWriteClient::Apply(const ChannelRequest &request,
                                               const std::function<bool(const Channel &)> &authorize)
 {
@@ -116,10 +165,10 @@ std::optional<Json> ChannelWriteClient::Apply(const ChannelRequest &request,
         if (c.key == request.target.key)
             channel = &c;
     if (!channel || !SameFieldTarget(request.target, *channel, request.field))
-        throw std::runtime_error("Channel identity or capabilities changed; control disabled");
+        throw std::runtime_error("Channel identity or capabilities changed; request canceled");
     const auto command = ChannelCommand(*channel, request.field, request.value);
-    if (Clock::now() - request.created >= std::chrono::milliseconds(500))
-        throw std::runtime_error("Control gesture expired before write");
+    if (Clock::now() - request.created >= std::chrono::seconds(5))
+        return {}; // Known pre-write cancellation; permission remains valid.
     if (!authorize || !authorize(*channel))
         return {};
     client_.SendBytes(command);
@@ -160,8 +209,7 @@ std::optional<Json> ChannelWriteClient::Apply(const ChannelRequest &request,
     }
     if (!checked || !SameFieldTarget(expected, *checked, request.field) || !p ||
         !SameControlValue(request.field, request.value, p->value))
-        throw std::runtime_error("Apollo readback did not confirm the write; "
-                                 "control disabled (not retried)");
+        throw std::runtime_error("Apollo readback did not confirm the write (not retried)");
     return p->value;
 }
 ChannelController::ChannelController(Observer &observer, uint16_t port)
@@ -179,16 +227,15 @@ ChannelController::~ChannelController()
 void ChannelController::Arm(const std::string &key)
 {
     const auto snapshot = observer_.Latest();
+    // Build the complete permission before publishing it. A transiently stale
+    // or incomplete observer frame must never leave a tracked-but-unarmed shell
+    // that prevents the desktop reconciler from trying again.
+    Permission next;
+    next.queue.Arm(snapshot, key);
     std::lock_guard<std::mutex> lock(mutex_);
-    auto &p = permissions_[key];
-    p.callbackEpoch = 0;
-    p.pending.clear();
-    p.safety = false;
-    p.transition.reset();
-    p.writingContext = false;
-    p.queue.Arm(snapshot, key);
-    p.callbackEpoch = ++nextEpoch_;
-    p.metadataRevision = snapshot.metadataRevision;
+    next.callbackEpoch = ++nextEpoch_;
+    next.metadataRevision = snapshot.metadataRevision;
+    permissions_[key] = std::move(next);
     error_.clear();
     UpdateEpoch();
     wake_.notify_all();
@@ -214,6 +261,11 @@ uint64_t ChannelController::Epoch(const std::string &key) const
     std::lock_guard<std::mutex> lock(mutex_);
     const auto it = permissions_.find(key);
     return it == permissions_.end() ? 0 : it->second.callbackEpoch;
+}
+bool ChannelController::Tracks(const std::string &key) const
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    return permissions_.find(key) != permissions_.end();
 }
 void ChannelController::UnlockSafety(const std::string &key)
 {
@@ -264,7 +316,7 @@ void ChannelController::Validate()
             if (!snapshot.connected || snapshot.generation != r.generation ||
                 Clock::now() - p.transitionAt > std::chrono::seconds(15))
             {
-                Fail(key, "Channel refresh not confirmed; this channel was locked");
+                Fail(key, "Channel refresh not confirmed; pending control cleared");
                 continue;
             }
             if (snapshot.metadataRevision > p.metadataRevision && current != snapshot.channels.end())
@@ -273,16 +325,21 @@ void ChannelController::Validate()
                 if (!SameControlTarget(expected, *current) || !value ||
                     !SameControlValue(r.field, r.value, value->value))
                 {
-                    Fail(key, "Channel changed during routing confirmation; this channel was locked");
+                    Fail(key, "Channel changed during routing confirmation; pending control cleared");
                     continue;
                 }
                 try
                 {
+                    // A saved Full/Custom policy authorizes this stable logical
+                    // channel for the connection, not only one state edge.
+                    // Fresh field validation and a new callback epoch still
+                    // prevent a gesture from crossing the topology refresh.
+                    const bool retainSafety = p.safety;
                     p.queue.Arm(snapshot, key);
                     p.callbackEpoch = ++nextEpoch_;
                     p.metadataRevision = snapshot.metadataRevision;
                     p.transition.reset();
-                    p.safety = false;
+                    p.safety = retainSafety;
                     UpdateEpoch();
                 }
                 catch (const std::exception &e)
@@ -295,7 +352,37 @@ void ChannelController::Validate()
         // The writer may already have received the authoritative route echo.
         // Do not revoke its permission between set and explicit readback.
         if (!p.writingContext && !p.queue.Valid(snapshot))
-            Fail(key, "Channel identity, capabilities or connection changed; this channel was locked");
+        {
+            const auto current = std::find_if(snapshot.channels.begin(), snapshot.channels.end(),
+                                              [&](const auto &c) { return c.key == key; });
+            // Loading, unloading or replacing an insert changes the extension
+            // model but not the channel identity. Preserve an already granted
+            // channel permission across that expected live topology change.
+            if (snapshot.connected && snapshot.generation == p.queue.Generation() &&
+                current != snapshot.channels.end() && SamePermissionTarget(p.queue.Target(), *current))
+            {
+                try
+                {
+                    const bool retainSafety = p.safety;
+                    p.queue.Arm(snapshot, key);
+                    p.callbackEpoch = ++nextEpoch_;
+                    p.metadataRevision = snapshot.metadataRevision;
+                    p.pending.clear();
+                    // Input mode, routing, linking and plug-in topology may
+                    // legitimately change while this remains the same logical
+                    // channel. Preserve explicit authority, rebuild from fresh
+                    // metadata and invalidate all callbacks from the old shape.
+                    p.safety = retainSafety;
+                    UpdateEpoch();
+                }
+                catch (const std::exception &e)
+                {
+                    Fail(key, e.what());
+                }
+            }
+            else
+                Fail(key, "Channel identity, capabilities or connection changed; pending control cleared");
+        }
     }
 }
 bool ChannelController::Submit(const std::string &key, ChannelAddress field, const Json &value,
@@ -384,7 +471,11 @@ Channel ChannelController::Feedback(Channel channel)
 }
 void ChannelController::Run()
 {
+    constexpr auto liveWriteInterval = std::chrono::milliseconds(10);
     std::unique_ptr<ChannelWriteClient> client;
+    std::optional<Clock::time_point> replyCheckAt;
+    std::string replyKey;
+    uint64_t replyAuthority = 0;
     while (!stop_)
     {
         std::optional<ChannelRequest> request;
@@ -392,33 +483,67 @@ void ChannelController::Run()
         std::string requestKey;
         try
         {
+            if (client && replyCheckAt && Clock::now() >= *replyCheckAt)
+            {
+                requestKey = replyKey;
+                authority = replyAuthority;
+                client->CheckRealtimeReplies();
+                replyCheckAt.reset();
+            }
             Validate();
             {
                 std::unique_lock<std::mutex> lock(mutex_);
-                wake_.wait_for(lock, std::chrono::milliseconds(50), [&] {
-                    if (stop_)
-                        return true;
-                    for (const auto &p : permissions_)
-                        if (p.second.queue.Size())
-                            return true;
-                    return false;
-                });
+                while (!stop_ && !request)
+                {
+                    const auto now = Clock::now();
+                    if (replyCheckAt && now >= *replyCheckAt)
+                        break;
+                    auto nextReady = Clock::time_point::max();
+                    bool queued = false;
+                    auto cursor = permissions_.upper_bound(lastKey_);
+                    for (size_t n = 0; n < permissions_.size(); ++n)
+                    {
+                        if (cursor == permissions_.end())
+                            cursor = permissions_.begin();
+                        auto &entry = *cursor++;
+                        if (!entry.second.queue.Size())
+                            continue;
+                        queued = true;
+                        auto candidate = entry.second.queue.TakeReady([&](const ChannelRequest &r) {
+                            if (!ContinuousField(r.field))
+                                return true;
+                            const auto sent = entry.second.lastDispatch.find(r.field);
+                            if (sent == entry.second.lastDispatch.end())
+                                return true;
+                            const auto ready = sent->second + liveWriteInterval;
+                            if (now >= ready)
+                                return true;
+                            nextReady = std::min(nextReady, ready);
+                            return false;
+                        });
+                        if (!candidate)
+                            continue;
+                        requestKey = lastKey_ = entry.first;
+                        authority = entry.second.callbackEpoch;
+                        request = std::move(candidate);
+                        entry.second.writingContext = ChangesChannelContext(request->field);
+                        break;
+                    }
+                    if (request)
+                        break;
+                    // No artificial global sleep: a newly queued switch or a
+                    // different fader wakes immediately, while only the same
+                    // continuous address waits for its own 100 Hz slot.
+                    auto wakeAt = now + std::chrono::milliseconds(50);
+                    if (queued && nextReady != Clock::time_point::max())
+                        wakeAt = std::min(wakeAt, nextReady);
+                    if (replyCheckAt)
+                        wakeAt = std::min(wakeAt, *replyCheckAt);
+                    wake_.wait_until(lock, wakeAt);
+                    break; // Revalidate topology and outstanding replies after every wait.
+                }
                 if (stop_)
                     break;
-                auto cursor = permissions_.upper_bound(lastKey_);
-                for (size_t n = 0; n < permissions_.size(); ++n)
-                {
-                    if (cursor == permissions_.end())
-                        cursor = permissions_.begin();
-                    auto &entry = *cursor++;
-                    if (!entry.second.queue.Size())
-                        continue;
-                    requestKey = lastKey_ = entry.first;
-                    authority = entry.second.callbackEpoch;
-                    request = entry.second.queue.Take();
-                    entry.second.writingContext = request && ChangesChannelContext(request->field);
-                    break;
-                }
                 if (!epoch_)
                     client.reset();
             }
@@ -429,7 +554,7 @@ void ChannelController::Run()
                 client = std::make_unique<ChannelWriteClient>(stop_, port_);
                 client->Connect();
             }
-            const auto result = client->Apply(*request, [&](const Channel &fresh) {
+            const auto result = client->ApplyRealtime(*request, [&](const Channel &fresh) {
                 const auto state = observer_.Latest();
                 std::lock_guard<std::mutex> lock(mutex_);
                 const auto found = permissions_.find(requestKey);
@@ -442,44 +567,63 @@ void ChannelController::Run()
                        it->second.sequence == request->sequence &&
                        (!NeedsSafetyUnlock(fresh, request->field, request->value) || p.safety);
             });
-            std::lock_guard<std::mutex> lock(mutex_);
-            const auto found = permissions_.find(requestKey);
-            if (found == permissions_.end() || found->second.callbackEpoch != authority)
-                continue;
-            auto &p = found->second;
-            p.writingContext = false;
-            if (!result)
             {
-                const auto cancelled = p.pending.find(request->field);
-                if (cancelled != p.pending.end() && cancelled->second.sequence == request->sequence)
-                    p.pending.erase(cancelled);
-                continue;
+                std::lock_guard<std::mutex> lock(mutex_);
+                const auto found = permissions_.find(requestKey);
+                if (found == permissions_.end() || found->second.callbackEpoch != authority)
+                    continue;
+                auto &p = found->second;
+                p.writingContext = false;
+                if (!result)
+                {
+                    const auto cancelled = p.pending.find(request->field);
+                    if (cancelled != p.pending.end() && cancelled->second.sequence == request->sequence)
+                        p.pending.erase(cancelled);
+                    error_.clear();
+                    lastOperation_ = "Pre-write gesture canceled; permission preserved";
+                    continue;
+                }
+                ++confirmed_;
+                if (ContinuousField(request->field))
+                    p.lastDispatch[request->field] = Clock::now();
+                lastOperation_ = std::string(FieldName(request->field)) + " dispatched=" + result->scalar +
+                                 " request=" + std::to_string(request->sequence) + " latency-ms=" +
+                                 std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                    Clock::now() - request->created)
+                                                    .count());
+                if (ChangesChannelContext(request->field))
+                {
+                    p.transition = request;
+                    p.transitionAt = Clock::now();
+                    p.metadataRevision = observer_.Latest().metadataRevision;
+                    p.queue.Disarm();
+                    p.callbackEpoch = 0;
+                    p.pending.clear();
+                    error_.clear();
+                    observer_.Refresh();
+                    continue;
+                }
+                const auto it = p.pending.find(request->field);
+                if (it != p.pending.end() && it->second.sequence == request->sequence)
+                    it->second = {request->sequence, *result, true, Clock::now()};
             }
-            ++confirmed_;
-            lastOperation_ = std::string(FieldName(request->field)) + " readback=" + result->scalar +
-                             " request=" + std::to_string(request->sequence) + " latency-ms=" +
-                             std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
-                                                Clock::now() - request->created)
-                                                .count());
-            if (ChangesChannelContext(request->field))
+
+            // Drain any reply already available without delaying another
+            // control. Per-address scheduling above provides the 100 Hz cap.
+            if (ContinuousField(request->field))
             {
-                p.transition = request;
-                p.transitionAt = Clock::now();
-                p.metadataRevision = observer_.Latest().metadataRevision;
-                p.queue.Disarm();
-                p.callbackEpoch = 0;
-                p.pending.clear();
-                error_.clear();
-                observer_.Refresh();
-                continue;
+                client->CheckRealtimeReplies();
+                replyCheckAt = Clock::now() + liveWriteInterval;
+                replyKey = requestKey;
+                replyAuthority = authority;
             }
-            const auto it = p.pending.find(request->field);
-            if (it != p.pending.end() && it->second.sequence == request->sequence)
-                it->second = {request->sequence, *result, true, Clock::now()};
+            else
+                replyCheckAt.reset();
         }
         catch (const std::exception &e)
         {
             client.reset(); // never retry a possibly executed write
+            replyCheckAt.reset();
             std::lock_guard<std::mutex> lock(mutex_);
             const auto found = permissions_.find(requestKey);
             if (found != permissions_.end() && found->second.callbackEpoch == authority)

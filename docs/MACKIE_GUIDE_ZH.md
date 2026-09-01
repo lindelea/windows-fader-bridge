@@ -1,5 +1,7 @@
 # Windows Fader Bridge for Mackie Control — 中文研究版指南
 
+当前应用版本：**v1.0.0**。
+
 ## 日常界面（2026-08-30 更新）
 
 程序默认打开日常工作区。旧调试界面只供开发者通过启动参数 `--diagnostics` 使用，

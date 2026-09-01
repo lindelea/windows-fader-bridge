@@ -1,6 +1,7 @@
 #pragma once
 #include "Model.h"
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -8,10 +9,13 @@ namespace apollo
 {
 class ChannelController;
 class MonitorController;
+class ConfigController;
 class ApolloEucon
 {
   public:
-    explicit ApolloEucon(const Snapshot &initial, ChannelController &controller, MonitorController &monitor);
+    explicit ApolloEucon(const Snapshot &initial, ChannelController &controller, MonitorController &monitor,
+                         bool experimentalConfig = false, ConfigController *configuration = nullptr,
+                         std::function<void()> wakeOwner = {});
     ~ApolloEucon();
     ApolloEucon(const ApolloEucon &) = delete;
     ApolloEucon &operator=(const ApolloEucon &) = delete;

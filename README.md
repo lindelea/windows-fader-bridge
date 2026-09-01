@@ -1,5 +1,10 @@
 # Windows Fader Bridge
 
+Current application version: **v1.0.0**. This version is shared by Windows
+Fader Bridge for EUCON, Windows Fader Bridge for Mackie Control, and UAD Console
+Bridge for EUCON. Protocol, settings-schema, SDK and dependency versions remain
+independent.
+
 Native Windows audio control from your control surface: application volume,
 pan, mute, solo, meters and everyday Windows commands.
 
@@ -14,9 +19,9 @@ These are protocol adapters, not device-specific drivers. Each edition has its
 own executable, settings and lifecycle. P1-Nano is the first Mackie test device,
 not a requirement; other MCU controllers use the same protocol implementation.
 
-## Apollo Bridge — experimental EUCON research
+## UAD Console Bridge for EUCON — development preview
 
-A separate **Apollo Bridge for EUCON** is being developed for the Apollo DSP
+A separate **UAD Console Bridge for EUCON** is being developed for the Apollo DSP
 mixer. The current checkpoint observes UA Mixer Engine state and contains a
 standard EUCON feedback adapter with independently armed, multi-channel fader,
 mute, solo and independent left/right pan control. The development build also
@@ -26,20 +31,28 @@ Input also offers channel-type-specific line reference/SRC, AUX PRE/POST/MONO,
 and TALK/TB-to-monitor controls. Empty insert slots show None. Channel colors
 distinguish input families. By explicit user choice, the channel Rec button/LED
 selects UAD REC/MON (effects printed vs dry DAW feed), not DAW record arming.
-Startup/reconnection stays read only. A separate standard EUCON control-room
+Startup is read only by default; restoring confirmed permissions at startup is
+an explicit opt-in. Reconnection never automatically restores write access.
+A separate standard EUCON control-room
 processor provides monitor level, Mute, Dim, Mono, dim depth, source selection
 and TALK behind its own explicit unlock and session level ceiling. The monitor
 is never a channel-strip fader. Phantom activation and talkback to monitor
-require separate per-channel safety confirmation. Plug-in loading and guessed
+require the separate sensitive-control permission.
 Loaded UNISON plug-ins have a separate, metadata-driven parameter area in the
 upper Channel Control hierarchy; raw UNISON gain curves are still never guessed.
 Confirmed self-authored routing refreshes
 the same channel's permission without disrupting other channels.
 **New channel/monitor features await S3 and Avid Control acceptance; this is not
 a production Apollo controller.**
+The new English / Simplified Chinese desktop presents status only. Settings
+contain independent permission scopes, a configurable monitor ceiling (up to
+0 dB), tray behavior and optional Windows sign-in startup. CONFIG features remain
+experimental and opt-in. The previous dashboard is private (`--diagnostics`).
 The existing Windows Fader Bridge editions remain independent and unchanged.
 
-See the [Chinese validation guide](docs/APOLLO_GUIDE_ZH.md) and
+See the [Chinese user guide](docs/UAD_CONSOLE_BRIDGE_GUIDE_ZH.md),
+[English user guide](docs/UAD_CONSOLE_BRIDGE_GUIDE_EN.md),
+[control mapping / legacy diagnostics](docs/APOLLO_GUIDE_ZH.md) and
 [research / verification record](docs/APOLLO_RESEARCH.md). SDK-free tests can be
 run with `scripts/build-apollo.ps1 -CoreOnly`; the EUCON host requires a
 separately obtained Avid SDK. No vendor SDK, manual or example is redistributed.

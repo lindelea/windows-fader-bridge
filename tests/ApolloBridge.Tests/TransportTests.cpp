@@ -2,6 +2,7 @@
 #include "ChannelWriter.h"
 #include "LiveControlProbe.h"
 #include "MonitorWriter.h"
+#include "ConfigWriter.h"
 #include "Observer.h"
 #include "ReadOnlyClient.h"
 #include <atomic>
@@ -86,6 +87,14 @@ class Engine
         std::lock_guard<std::mutex> lock(nodesMutex_);
         for (const auto &entry : ChannelFeatureFixture("/devices/0/inputs/0"))
             nodes_[entry.first] = Encode(entry.second);
+    }
+    void AddConfig()
+    {
+        std::lock_guard<std::mutex> lock(nodesMutex_);
+        NodeMap nodes;
+        for (const auto &entry : nodes_) nodes[entry.first] = Json::Parse(entry.second);
+        AddConfigurationFixture(nodes, "/devices/0");
+        for (const auto &entry : nodes) nodes_[entry.first] = Encode(entry.second);
     }
     void InstallConsole()
     {
@@ -239,12 +248,14 @@ class Engine
                         path.resize(split);
                         const bool monitor = path.rfind("/devices/0/outputs/42/", 0) == 0;
                         const bool dimDepth = path == "/devices/0/DimAttenuation/value";
+                        const bool config = path == "/ClipHold/value" || path == "/PostFaderMetering/value";
+                        const bool cueConfig = path.rfind("/devices/0/outputs/44/", 0) == 0 || path.rfind("/devices/0/outputs/46/", 0) == 0;
                         const bool talk =
                             path == "/TalkbackOn/value" || path == "/TalkbackInPhysicalCR/value";
                         const bool feature = path.find("/sends/") != path.npos ||
                                              path.find("/preamps/") != path.npos ||
                                              path.find("/effects/") != path.npos;
-                        const std::string nodePath = talk       ? "/"
+                        const std::string nodePath = talk || config ? "/"
                                                      : dimDepth ? "/devices/0"
                                                      : monitor
                                                          ? "/devices/0/outputs/42"
@@ -253,12 +264,13 @@ class Engine
                         Check(path.rfind(prefix, 0) == 0 && path.substr(path.size() - 6) == "/value",
                               "Fixture scoped set");
                         const auto property = path.substr(prefix.size(), path.size() - prefix.size() - 6);
-                        Check(talk || dimDepth ||
+                        Check(talk || dimDepth || config || cueConfig ||
                                   (feature
                                        ? (property == "Gain" || property == "Bypass" || property == "Pan" ||
                                           property == "LowCut" || property == "Phase" || property == "Pad" ||
                                           property == "Power" || property == "NormalizedValue" ||
-                                          property == "StepValue" || property == "48V")
+                                          property == "StepValue" || property == "48V" ||
+                                          property == "EffectName" || property == "Preset")
                                    : monitor ? (property == "CRMonitorLevel" || property == "Mute" ||
                                                 property == "DimOn" || property == "MixToMono" ||
                                                 property == "MixInSource")
@@ -280,6 +292,9 @@ class Engine
                             std::lock_guard<std::mutex> lock(nodesMutex_);
                             auto node = Json::Parse(nodes_.at(nodePath));
                             node.object["properties"].object[property].object["value"] = Json::Parse(scalar);
+                            if (property == "EffectName")
+                                node.object["properties"].object["EffectInstance"].object["value"] =
+                                    Json::Parse(Json::Parse(scalar).scalar.empty() ? "0" : "123456");
                             nodes_[nodePath] = Encode(node);
                         }
                         if (dropAfterSet)
@@ -452,6 +467,17 @@ void Writes()
     const auto key = observer.Latest().channels[0].key;
     Check(!controller.Epoch() && !controller.Submit(key, ChannelField::Mute, Json::Parse("true"), 1),
           "Unarmed has no writes");
+    bool missingRejected = false;
+    try
+    {
+        controller.Arm("missing-channel");
+    }
+    catch (const std::exception &)
+    {
+        missingRejected = true;
+    }
+    Check(missingRejected && !controller.Tracks("missing-channel"),
+          "Failed permission binding leaves no tracked shell and remains retryable");
     controller.Arm(key);
     Check(engine.writes == 0, "Arming changes no audio");
     uint64_t expected = 0;
@@ -473,10 +499,14 @@ void Writes()
     Check(!controller.Submit(key, ChannelField::Mute, Json::Parse("false"), previous), "Old epoch discarded");
     controller.Arm(key);
     engine.wrongReadback = true;
+    const auto liveWrites = engine.writes.load();
     controller.Submit(key, ChannelField::PanLeft, ControlNumber(-.5), controller.Epoch());
-    Until([&] { return !controller.Epoch(); }, 4000, "Wrong readback disarms");
-    Check(!controller.Status().error.empty() && controller.Status().confirmed == expected,
-          "Set echo not accepted as readback");
+    ++expected;
+    Until([&] { return controller.Status().confirmed == expected || !controller.Epoch(); }, 4000,
+          "Live channel write dispatches");
+    Check(controller.Epoch() && controller.Status().error.empty() &&
+              controller.Status().confirmed == expected && engine.writes == liveWrites + 1,
+          "Ordinary mixing uses one live set and leaves final reconciliation to observation");
     engine.wrongReadback = false;
     {
         ChannelWriteClient client(stop, engine.port);
@@ -484,20 +514,12 @@ void Writes()
         const auto state = observer.Latest();
         ChannelRequest request{
             state.channels[0], ChannelField::Level, ControlNumber(-21), 1, state.generation, 1, Clock::now()};
-        const auto before = engine.writes.load();
+        auto before = engine.writes.load();
         Check(!client.Apply(request, [](const Channel &) { return false; }), "Final permission cancellation");
         Check(engine.writes == before, "Cancelled transaction sent no write");
-        request.created -= std::chrono::seconds(2);
-        bool expired = false;
-        try
-        {
-            client.Apply(request, [](const Channel &) { return true; });
-        }
-        catch (const std::exception &)
-        {
-            expired = true;
-        }
-        Check(expired && engine.writes == before, "Expired request rejected before set");
+        request.created -= std::chrono::seconds(6);
+        Check(!client.Apply(request, [](const Channel &) { return true; }) && engine.writes == before,
+              "Expired channel gesture is a pre-write cancellation, not a permission failure");
         request.created = Clock::now();
         request.target.stereo = false;
         bool changed = false;
@@ -562,7 +584,7 @@ void FeatureWrites()
               "Feature full-node readback confirmed");
     }
     auto rejected = [&](ChannelRequest request, bool expectWrite) {
-        const auto before = engine.writes.load();
+        auto before = engine.writes.load();
         request.created = Clock::now();
         bool failed = false;
         try
@@ -634,6 +656,7 @@ void FeatureWrites()
     Until([&] { return observer.Latest().connected; }, 5000, "Fresh feature observer");
     ChannelController controller(observer, engine.port);
     controller.Arm(target.key);
+    Check(controller.Tracks(target.key), "Explicit channel authority is tracked independently of callback epoch");
     const auto beforeRouteEpoch = controller.Epoch(target.key);
     Check(
         controller.Submit(target.key, ChannelField::Output, Json::Parse("\"Line 1-2\""), controller.Epoch()),
@@ -649,6 +672,8 @@ void FeatureWrites()
         "Post-route channel remains controllable");
     Until([&] { return controller.Status().confirmed == 2; }, 4000, "Post-route mute confirmed");
     Check(!engine.badCommand, "No unallowlisted feature commands");
+    controller.Disarm(target.key);
+    Check(!controller.Tracks(target.key), "Explicit channel lock removes tracked authority");
     observer.Stop();
 }
 void MonitorWrites()
@@ -721,7 +746,7 @@ void MonitorWrites()
         writer.Connect();
         auto request = MonitorRequest{m, MonitorField::Level, ControlNumber(-40), -30, 1, state.generation,
                                       1, Clock::now()};
-        const auto before = engine.writes.load();
+        auto before = engine.writes.load();
         Check(!writer.Apply(request, [](const Monitor &) { return false; }) && engine.writes == before,
               "Last-moment cancellation sends no monitor write");
         auto rejects = [&](const MonitorRequest &r) {
@@ -736,11 +761,15 @@ void MonitorWrites()
             }
             Check(rejected && engine.writes == before, "Unsafe monitor transaction rejected before set");
         };
-        request.created -= std::chrono::seconds(2);
-        rejects(request);
+        request.created -= std::chrono::seconds(6);
+        Check(!writer.Apply(request, [](const Monitor &) { return true; }) && engine.writes == before,
+              "Expired monitor gesture is a pre-write cancellation, not a permission failure");
         request.created = Clock::now();
         engine.SetProperty(m.path, "CRMonitorLevel", ControlNumber(-20));
-        rejects(request);
+        Check(writer.Apply(request, [](const Monitor &) { return true; }).has_value() &&
+                  engine.writes == before + 1,
+              "A live level above the ceiling can be reduced by an authorized level request");
+        before = engine.writes.load();
         engine.SetProperty(m.path, "CRMonitorLevel", ControlNumber(-30));
         for (const auto &change : {std::pair<const char *, const char *>{"AltMonSelection", "1"},
                                    {"Enable24dBMode", "true"},
@@ -767,18 +796,22 @@ void MonitorWrites()
         engine.wrongReadback = true;
         const auto writes = engine.writes.load();
         controller.Submit(m.key, operation.first, operation.second, controller.Epoch());
-        Until([&] { return !controller.Epoch(); }, 4000, "New monitor field wrong readback locks");
+        ++expected;
+        Until([&] { return controller.Status().confirmed == expected || !controller.Epoch(); }, 4000,
+              "New monitor field live dispatch");
         Check(engine.writes == writes + 1 && controller.Status().confirmed == expected &&
-                  !controller.Status().error.empty(),
-              "Global/device/source set echo is not proof; never retried");
+                  controller.Status().error.empty() && controller.Epoch(),
+              "Ordinary monitor controls use one live set without transactional readback");
         engine.wrongReadback = false;
     }
     controller.Arm(m.key);
     engine.wrongReadback = true;
     controller.Submit(m.key, MonitorField::Level, ControlNumber(-45), controller.Epoch());
-    Until([&] { return !controller.Epoch(); }, 4000, "Wrong monitor readback locks");
-    Check(controller.Status().confirmed == expected && !controller.Status().error.empty(),
-          "Echo not confirmation");
+    ++expected;
+    Until([&] { return controller.Status().confirmed == expected || !controller.Epoch(); }, 4000,
+          "Live monitor level dispatch");
+    Check(controller.Status().confirmed == expected && controller.Status().error.empty() && controller.Epoch(),
+          "Monitor level remains live while observation owns final state");
     engine.wrongReadback = false;
     controller.Arm(m.key);
     engine.rejectWrites = true;
@@ -793,6 +826,38 @@ void MonitorWrites()
     std::this_thread::sleep_for(std::chrono::milliseconds(150));
     Check(engine.writes == count && !engine.badCommand, "No monitor retry after uncertain write");
     observer.Stop();
+}
+void ConfiguredMonitorCeilingWrites()
+{
+    Engine engine;
+    engine.AddMonitor(); engine.allowWrites = true;
+    Observer observer(engine.port); observer.Start();
+    Until([&] { return observer.Latest().connected && observer.Latest().monitors.size() == 1; }, 4000,
+          "Configured ceiling fixture observed");
+    MonitorController monitor(observer, engine.port);
+    const auto target = observer.Latest().monitors.front();
+    monitor.Arm(target.key, 0);
+    Check(engine.writes == 0 && monitor.Status().ceiling == 0, "Explicit unity ceiling grants no immediate write");
+    Check(monitor.Submit(target.key, MonitorField::Level, ControlNumber(-2), monitor.Epoch()), "Configured ceiling admits valid level");
+    Until([&] { return monitor.Status().confirmed == 1; }, 4000, "Configured ceiling readback");
+    // This fixture does not broadcast value subscriptions; request a new snapshot explicitly.
+    observer.Refresh();
+    Until([&] { return observer.Latest().monitors.front().level->value.Number() == -2; }, 4000, "Configured level observed");
+    monitor.Arm(target.key, -6);
+    Check(monitor.Epoch() && engine.writes == 1,
+          "Lower ceiling grants control without changing the live level");
+    engine.SetProperty(target.path, "CRMonitorLevel", ControlNumber(-20));
+    observer.Refresh();
+    Until([&] { return observer.Latest().monitors.front().level->value.Number() == -20; }, 4000, "External level below ceiling observed");
+    monitor.Validate();
+    Check(monitor.Epoch(), "External level changes do not revoke Control Room permission");
+    Check(monitor.Submit(target.key, MonitorField::Level, ControlNumber(0), monitor.Epoch()), "Over-ceiling gesture is constrained");
+    Until([&] { return monitor.Status().confirmed == 2; }, 4000, "Constrained level readback");
+    std::atomic<bool> stop = false;
+    ReadOnlyClient reader(stop, engine.port); reader.Connect();
+    Check(Property(reader.Get(target.path), "CRMonitorLevel").At("value").Number() == -6 && engine.writes == 2,
+          "Only the configured ceiling reaches the synthetic engine");
+    monitor.Disarm(); observer.Stop();
 }
 void ConsoleWorkflow()
 {
@@ -852,8 +917,20 @@ void ConsoleWorkflow()
           "Old preamp epoch cannot reappear");
     change(mic, {ChannelField::Phantom, "0"}, Json::Parse("false"));
     Until([&] { return controller.Epoch(mic) != 0; }, 6000, "Phantom off refresh finishes");
+    change(mic, {ChannelField::Phantom, "0"}, Json::Parse("true"));
+    Until([&] { return controller.Epoch(mic) != 0; }, 6000,
+          "Sensitive permission survives confirmed phantom context refresh");
+    change(mic, {ChannelField::Phantom, "0"}, Json::Parse("false"));
+    Until([&] { return controller.Epoch(mic) != 0; }, 6000, "Repeated phantom off refresh finishes");
     change(mic, ChannelField::Input, Json::Parse("\"Line\""));
     Until([&] { return controller.Epoch(mic) != 0; }, 6000, "Input source refresh finishes");
+    change(mic, ChannelField::Input, Json::Parse("\"Mic\""));
+    Until([&] { return controller.Epoch(mic) != 0; }, 6000, "Return to mic refresh finishes");
+    change(mic, {ChannelField::Phantom, "0"}, Json::Parse("true"));
+    Until([&] { return controller.Epoch(mic) != 0; }, 6000,
+          "Sensitive permission survives confirmed input source refresh");
+    change(mic, {ChannelField::Phantom, "0"}, Json::Parse("false"));
+    Until([&] { return controller.Epoch(mic) != 0; }, 6000, "Post-route phantom refresh finishes");
     const auto beforeRoute = controller.Epoch(line);
     change(line, ChannelField::Output, Json::Parse("\"Line 1-2\""));
     Until([&] { return controller.Epoch(line) > beforeRoute; }, 6000, "Route continues with fresh epoch");
@@ -877,9 +954,13 @@ void ConsoleWorkflow()
         std::this_thread::sleep_for(std::chrono::milliseconds(40));
     }
     engine.readDelayMs = 0;
+    const auto beforeExternalRoute = controller.Epoch(line);
     engine.SetProperty("/devices/0/inputs/4", "OutputDestination", Json::Parse("\"Monitor\""));
     observer.Refresh();
-    Until([&] { return !controller.Epoch(line); }, 6000, "External routing revokes only affected channel");
+    Until([&] { return controller.Epoch(line) > beforeExternalRoute; }, 6000,
+          "External route refreshes stable channel permission");
+    Check(!controller.Submit(line, ChannelField::Mute, Json::Parse("false"), beforeExternalRoute),
+          "External route invalidates callbacks from the old shape");
     Check(controller.Epoch(mic) && controller.Epoch(aux),
           "Other channels remain available after external reroute");
     controller.Disarm();
@@ -955,6 +1036,129 @@ void UpperWorkflow()
     Check(!engine.badCommand, "Upper workflow uses only known fixture paths");
 }
 
+void ConfigurationWrites()
+{
+    Engine engine;
+    engine.AddFeatures();
+    engine.AddConfig();
+    engine.allowWrites = true;
+    Observer observer(engine.port);
+    observer.Start();
+    Until([&] { return observer.Latest().connected; }, 6000, "Config observer ready");
+    ConfigController controller(observer, engine.port);
+    ChannelController channel(observer, engine.port);
+    MonitorController monitor(observer, engine.port);
+    auto state = observer.Latest();
+    auto setting = *FindConfig(state.configuration, "/ClipHold");
+    Check(!controller.Submit(setting, 1, 0) && engine.writes == 0, "Config permission defaults locked");
+    controller.Arm();
+    Check(!channel.Epoch() && !monitor.Epoch(), "Config arm cannot unlock audio controls");
+    auto epoch = controller.Epoch();
+    Check(!controller.Submit(setting, 1, epoch + 1), "Config rejects wrong callback epoch");
+    Check(controller.Submit(setting, 1, epoch), "Explicit Config confirmation queued");
+    Until([&] { return controller.Status().confirmed == 1 || !controller.Epoch(); }, 6000, "Config readback");
+    Check(controller.Status().confirmed == 1 && engine.writes == 1, "Config full node readback confirmed");
+    Until([&] { return FindConfig(observer.Latest().configuration, "/ClipHold")->value.scalar == "2 SEC"; }, 6000, "Config feedback refresh");
+    controller.Disarm();
+    Check(!controller.Submit(setting, 2, epoch), "Config stale epoch rejected after lock");
+    // Exercise cue source/mono/mirror and headphone routing with actual node readback.
+    std::atomic<bool> configStop{false};
+    for (const auto &operation : std::vector<std::pair<std::string, size_t>>{
+             {"/devices/0/outputs/44/MixToMono", 1}, {"/devices/0/outputs/44/MixInSource", 1},
+             {"/devices/0/outputs/44/OutputDestination", 1}, {"/devices/0/outputs/46/MixInSource", 2}})
+    {
+        const auto target = *FindConfig(observer.Latest().configuration, operation.first);
+        ConfigRequest cueRequest{target, target.options[operation.second], 1, state.generation, Clock::now()};
+        ConfigWriteClient writer(configStop, engine.port);
+        Check(writer.Apply(cueRequest, [] { return true; }), "Cue output configuration readback confirmed");
+    }
+    ReadOnlyClient catalog(configStop, engine.port);
+    catalog.Connect();
+    NodeMap pluginNodes;
+    const auto current = observer.Latest();
+    const auto *slot = FindConfig(current.configuration, "/devices/0/inputs/0/effects/0/EffectName");
+    for (const auto &p : slot->reads) pluginNodes[p] = catalog.Get(p);
+    pluginNodes["/plugins/7"] = catalog.Get("/plugins/7");
+    pluginNodes["/devices/0/inputs/0/effects/2"] = catalog.Get("/devices/0/inputs/0/effects/2");
+    const auto pluginState = BuildConfiguration(pluginNodes);
+    const auto plugin = *FindConfig(pluginState, slot->key);
+    ConfigRequest pluginRequest{plugin, plugin.options[1], 1, state.generation, Clock::now()};
+    ConfigWriteClient pluginWriter(configStop, engine.port);
+    Check(pluginWriter.Apply(pluginRequest, [] { return true; }), "Owned plugin load confirms effect name and instance");
+    bool stalePlugin = false;
+    try { ConfigWriteClient writer(configStop, engine.port); writer.Apply(pluginRequest, [] { return true; }); }
+    catch (const std::exception &) { stalePlugin = true; }
+    Check(stalePlugin, "Replaced plugin cannot inherit stale slot gesture");
+    const auto preset = *FindConfig(pluginState, "/devices/0/inputs/0/effects/2/Preset");
+    ConfigRequest presetRequest{preset, preset.options[1], 1, state.generation, Clock::now()};
+    ConfigWriteClient presetWriter(configStop, engine.port);
+    Check(presetWriter.Apply(presetRequest, [] { return true; }), "Existing preset recall confirmed without file writes");
+    NodeMap unisonNodes;
+    const auto *unisonSlot = FindConfig(observer.Latest().configuration,
+                                        "/devices/0/inputs/0/preamps/0/effects/0/EffectName");
+    Check(unisonSlot != nullptr, "UNISON Config load slot is published");
+    for (const auto &p : unisonSlot->reads) unisonNodes[p] = catalog.Get(p);
+    unisonNodes["/plugins/7"] = catalog.Get("/plugins/7");
+    const auto unisonState = BuildConfiguration(unisonNodes);
+    const auto unisonLoad = *FindConfig(unisonState, unisonSlot->key);
+    Check(unisonLoad.options.size() == 2 && unisonLoad.options[0].label == "NONE",
+          "UNISON Config exposes NONE plus authorized native UNISON plug-ins only");
+    ConfigRequest unisonRequest{unisonLoad, unisonLoad.options[1], 1, state.generation, Clock::now()};
+    ConfigWriteClient unisonWriter(configStop, engine.port);
+    Check(unisonWriter.Apply(unisonRequest, [] { return true; }),
+          "UNISON Config load confirms effect name and instance");
+    NodeMap loadedUnisonNodes;
+    for (const auto &p : unisonLoad.reads) loadedUnisonNodes[p] = catalog.Get(p);
+    loadedUnisonNodes["/plugins/7"] = catalog.Get("/plugins/7");
+    const auto loadedUnisonState = BuildConfiguration(loadedUnisonNodes);
+    const auto loadedUnison = *FindConfig(loadedUnisonState, unisonLoad.key);
+    ConfigRequest unisonNone{loadedUnison, loadedUnison.options[0], 1, state.generation, Clock::now()};
+    ConfigWriteClient unisonUnloader(configStop, engine.port);
+    Check(unisonUnloader.Apply(unisonNone, [] { return true; }),
+          "UNISON Config NONE unload confirms empty name and zero instance");
+    std::atomic<bool> stop{false};
+    setting = *FindConfig(observer.Latest().configuration, "/ClipHold");
+    ConfigRequest request{setting, setting.options[2], 1, state.generation, Clock::now()};
+    auto before = engine.writes.load();
+    ConfigWriteClient cancelled(stop, engine.port);
+    Check(!cancelled.Apply(request, [] { return false; }) && engine.writes == before,
+          "Config cancellation checked after metadata reads");
+    engine.SetProperty("/", "ClipHold", ConfigString("NONE"));
+    bool rejected = false;
+    try { ConfigWriteClient writer(stop, engine.port); writer.Apply(request, [] { return true; }); }
+    catch (const std::exception &) { rejected = true; }
+    Check(rejected && engine.writes == before, "External Config edit cancels stale selection before write");
+    engine.SetProperty("/", "ClipHold", ConfigString("2 SEC"));
+    engine.SetMetadata("/", "ClipHold", "values", Json::Parse(R"(["NONE","2 SEC"] )"));
+    rejected = false;
+    try { ConfigWriteClient writer(stop, engine.port); writer.Apply(request, [] { return true; }); }
+    catch (const std::exception &) { rejected = true; }
+    Check(rejected && engine.writes == before, "Config choice no longer available is rejected");
+    engine.SetMetadata("/", "ClipHold", "values", Json::Parse(R"(["NONE","2 SEC","5 SEC"] )"));
+    request.created = Clock::now();
+    engine.wrongReadback = true;
+    rejected = false;
+    try { ConfigWriteClient writer(stop, engine.port); writer.Apply(request, [] { return true; }); }
+    catch (const std::exception &) { rejected = true; }
+    Check(rejected && engine.writes == before + 1, "Config scalar echo is not accepted as node readback; no retry");
+    engine.wrongReadback = false;
+    engine.rejectWrites = true;
+    request.created = Clock::now();
+    rejected = false;
+    try { ConfigWriteClient writer(stop, engine.port); writer.Apply(request, [] { return true; }); }
+    catch (const std::exception &) { rejected = true; }
+    Check(rejected && engine.writes == before + 2, "Rejected Config write not retried");
+    engine.rejectWrites = false;
+    engine.SetProperty("/devices/0", "DeviceHwID", Json::Parse("88888888888888"));
+    request.created = Clock::now();
+    rejected = false;
+    try { ConfigWriteClient writer(stop, engine.port); writer.Apply(request, [] { return true; }); }
+    catch (const std::exception &) { rejected = true; }
+    Check(rejected && engine.writes == before + 2, "Changed hardware identity prevents Config write");
+    observer.Stop();
+    Check(!engine.badCommand, "Config tests only use synthetic allowlisted fields");
+}
+
 int main(int argc, char **argv)
 {
     try
@@ -972,7 +1176,9 @@ int main(int argc, char **argv)
         FeatureWrites();
         ConsoleWorkflow();
         MonitorWrites();
+        ConfiguredMonitorCeilingWrites();
         UpperWorkflow();
+        ConfigurationWrites();
         std::cout << "Apollo transport: framing, subscription, invalid envelope, "
                      "cancellation, disconnect, reconnect "
                      "and shutdown; typed channel/control-room writes, ceiling, context "

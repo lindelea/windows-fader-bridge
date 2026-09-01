@@ -9,7 +9,7 @@ namespace
 {
 using Clock = std::chrono::steady_clock;
 NodeMap Discover(ReadOnlyClient &client, const std::function<void(const Json &)> &update,
-                 const std::function<void()> &progress = {})
+                 const std::function<void()> &progress = {}, bool configuration = false)
 {
     NodeMap nodes;
     const auto get = [&](const std::string &path) -> const Json & {
@@ -28,6 +28,13 @@ NodeMap Discover(ReadOnlyClient &client, const std::function<void(const Json &)>
         return saved;
     };
     get("/"); // Global talkback state; observation only, never routing changes.
+    if (configuration)
+    {
+        const auto catalog = Children(get("/plugins"));
+        if (catalog.size() > 512) throw std::runtime_error("Plugin catalog limit exceeded");
+        for (const auto &slot : catalog)
+            if (NumericSlot(slot)) get("/plugins/" + slot);
+    }
     const auto devices = Children(get("/devices"));
     if (devices.size() > 16)
         throw std::runtime_error("Apollo device limit exceeded");
@@ -118,6 +125,11 @@ Observer::~Observer()
 {
     Stop();
 }
+void Observer::EnableConfiguration()
+{
+    if (thread_.joinable()) throw std::logic_error("Configure observation before Start");
+    configuration_ = true;
+}
 void Observer::Start()
 {
     if (thread_.joinable())
@@ -151,7 +163,7 @@ void Observer::Run()
         {
             ReadOnlyClient client(stop_, port_);
             client.Connect();
-            NodeMap nodes = Discover(client, {});
+            NodeMap nodes = Discover(client, {}, {}, configuration_);
             ++generation;
             std::set<std::string> subscribed;
             bool refreshRequested = false;
@@ -233,7 +245,7 @@ void Observer::Run()
                     auto fresh = Discover(client, update, [&] {
                         receivedAt = Clock::now();
                         publish();
-                    });
+                    }, configuration_);
                     nodes = std::move(fresh);
                     ++revision;
                     subscribe();

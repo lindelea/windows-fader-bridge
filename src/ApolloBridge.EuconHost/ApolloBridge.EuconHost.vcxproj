@@ -11,12 +11,13 @@
   <PropertyGroup><AvidEuconSdkDir Condition="'$(AvidEuconSdkDir)'==''">C:\Program Files\Avid\EUCON SDK</AvidEuconSdkDir><OutDir>$(SolutionDir)artifacts\apollo-eucon\$(Configuration)\</OutDir><IntDir>$(SolutionDir)obj\apollo-eucon\$(Configuration)\</IntDir><TargetName>ApolloBridge.Eucon</TargetName></PropertyGroup>
   <ItemDefinitionGroup>
     <ClCompile><WarningLevel>Level4</WarningLevel><SDLCheck>true</SDLCheck><LanguageStandard>stdcpp17</LanguageStandard><PreprocessorDefinitions>WIN32;_WINDOWS;UNICODE;_UNICODE;NOMINMAX;%(PreprocessorDefinitions)</PreprocessorDefinitions><AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions><AdditionalIncludeDirectories>$(ProjectDir)..\ApolloBridge.Core;$(AvidEuconSdkDir)\include;$(AvidEuconSdkDir)\include\ProcessorAPI;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories></ClCompile>
-    <Link><SubSystem>Windows</SubSystem><AdditionalLibraryDirectories>$(AvidEuconSdkDir)\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories><AdditionalDependencies>Ws2_32.lib;Shell32.lib;Ole32.lib;Dwmapi.lib;Gdi32.lib;User32.lib;%(AdditionalDependencies)</AdditionalDependencies></Link>
+    <Link><SubSystem>Windows</SubSystem><AdditionalLibraryDirectories>$(AvidEuconSdkDir)\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories><AdditionalDependencies>Ws2_32.lib;Shell32.lib;Ole32.lib;Dwmapi.lib;Gdi32.lib;Gdiplus.lib;User32.lib;Comctl32.lib;UxTheme.lib;Advapi32.lib;%(AdditionalDependencies)</AdditionalDependencies></Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)'=='Release'"><Link><AdditionalDependencies>EuAPI2_vc17.lib;%(AdditionalDependencies)</AdditionalDependencies></Link></ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)'=='Debug'"><Link><AdditionalDependencies>EuAPI2d_vc17.lib;%(AdditionalDependencies)</AdditionalDependencies></Link></ItemDefinitionGroup>
   <ItemGroup><ClCompile Include="main.cpp"/><ClCompile Include="ApolloEucon.cpp"/><ClCompile Include="..\ApolloBridge.Core\Json.cpp"/><ClCompile Include="..\ApolloBridge.Core\Protocol.cpp"/><ClCompile Include="..\ApolloBridge.Core\Model.cpp"/><ClCompile Include="..\ApolloBridge.Core\ReadOnlyClient.cpp"/><ClCompile Include="..\ApolloBridge.Core\Observer.cpp"/></ItemGroup>
   <ItemGroup><ClCompile Include="..\ApolloBridge.Core\ChannelControl.cpp"/><ClCompile Include="..\ApolloBridge.Core\ChannelWriter.cpp"/></ItemGroup>
+  <ItemGroup><ClCompile Include="ApolloDesktop.cpp"/><ResourceCompile Include="UADConsoleBridge.rc"/></ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ItemGroup><ClCompile Include="..\ApolloBridge.Core\MonitorControl.cpp"/><ClCompile Include="..\ApolloBridge.Core\MonitorWriter.cpp"/></ItemGroup>
 </Project>

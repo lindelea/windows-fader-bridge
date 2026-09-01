@@ -1,13 +1,16 @@
 #include "../../src/ApolloBridge.EuconHost/UpperDirectoryLayout.h"
+#include "../../src/ApolloBridge.EuconHost/DesktopChannelStatus.h"
 #include "ChannelControl.h"
 #include "ChannelFeatureFixture.h"
 #include "ChannelLayout.h"
+#include "ConfigLayout.h"
 #include "FaderScale.h"
 #include "Json.h"
 #include "Model.h"
 #include "MonitorControl.h"
 #include "MonitorLayout.h"
 #include "Protocol.h"
+#include "Preferences.h"
 #include <algorithm>
 #include <cmath>
 #include <iostream>
@@ -370,6 +373,28 @@ void MonitorTests()
     Check(!SameMonitorPage(m, monitorFeedback), "Changed monitor permissions invalidate upper page");
     Check(SurfaceChannels(state).size() == state.channels.size(), "Eligible monitor still has no fader slot");
     MonitorQueue q;
+    MonitorQueue configured;
+    const auto configuredEpoch = configured.Arm(state, m.key, 0);
+    Check(configuredEpoch && configured.Ceiling() == 0 && configured.Size() == 0,
+          "Explicit unity ceiling arms without issuing a monitor write");
+    Check(configured.Submit(MonitorField::Level, ControlNumber(0), configuredEpoch) != 0,
+          "User-configured ceiling permits a level up to native unity");
+    configured.Arm(state, m.key, -20);
+    Check(configured.Size() == 0 && !configured.Submit(MonitorField::Level, ControlNumber(-10), configuredEpoch),
+          "Ceiling changes discard queued gestures and invalidate old callbacks");
+    Check(configured.Submit(MonitorField::Level, ControlNumber(-5), configured.Epoch()) != 0 &&
+          configured.Take()->value.Number() == -20, "Monitor command clamps at configured ceiling");
+    for (double invalid : std::vector<double>{0.1, -97.0, INFINITY, NAN})
+    {
+        Reject([&] { configured.Arm(state, m.key, invalid); });
+        Check(!configured.Epoch(), "Invalid ceiling leaves permissions locked");
+    }
+    const auto limitedEpoch = configured.Arm(state, m.key, -40);
+    Check(limitedEpoch && configured.Size() == 0,
+          "A ceiling below the live level grants control without an automatic write");
+    Check(configured.Submit(MonitorField::Level, ControlNumber(-20), limitedEpoch) != 0 &&
+              configured.Take()->value.Number() == -40,
+          "The next user level request is clamped to the selected ceiling");
     Check(!q.Epoch() && !q.Submit(MonitorField::Level, ControlNumber(-40), 0), "Monitor defaults locked");
     const auto epoch = q.Arm(state, m.key);
     Check(epoch && q.Ceiling() == -30 && q.Size() == 0,
@@ -425,7 +450,9 @@ void MonitorTests()
     Check(!SameMonitorTarget(m, changed), "Unknown dim-depth capability revokes permission");
     changed = m;
     changed.level->value = ControlNumber(-20);
-    Reject([&] { MonitorCommand(changed, MonitorField::Mute, Json::Parse("false"), -30); });
+    Check(MonitorCommand(changed, MonitorField::Mute, Json::Parse("false"), -30).find(" false") !=
+              std::string::npos,
+          "A live level above the bridge ceiling does not block non-level controls");
     for (const auto depth : MonitorDimTable())
         Check(MonitorCommand(m, MonitorField::DimAmount, ControlNumber(-depth), -30) ==
                   std::string("set /devices/3/DimAttenuation/value ") + ControlNumber(-depth).scalar + '\0',
@@ -462,7 +489,8 @@ void MonitorTests()
     Check(SameMonitorTarget(advanced, cue), "Source change retains the independent monitor processor");
     cue = advanced;
     cue.talkbackToMonitor->value = Json::Parse("true");
-    Reject([&] { MonitorCommand(cue, MonitorField::Talk, Json::Parse("true"), -30); });
+    Check(!MonitorCommand(cue, MonitorField::Talk, Json::Parse("true"), -30).empty(),
+          "Explicit Control Room access permits TALK with the selected Console routing");
     Check(!MonitorCommand(cue, MonitorField::Talk, Json::Parse("false"), -30).empty(),
           "Physical CR routing never prevents explicit talk-off");
     Check(!SameMonitorTarget(advanced, cue), "Talkback routing change revokes authorization");
@@ -483,14 +511,17 @@ void MonitorTests()
           "Root path has one slash");
     auto other = state;
     other.monitors.front() = changed;
-    Check(!q.Valid(other), "External increase above ceiling locks without writing correction");
+    Check(q.Valid(other), "External level above ceiling preserves control without writing correction");
     other = state;
     other.monitors.front().level->value = ControlNumber(-40);
     Check(q.Valid(other), "External decrease preserves original ceiling");
     for (int i = 0; i < 1000; ++i)
         Check(q.Submit(MonitorField::Level, ControlNumber(-96 + i * .09), epoch) != 0,
               "Coalesced monitor gesture");
-    Check(q.Size() == 1 && q.Take()->value.Number() == -30, "One latest clamped level only");
+    q.Submit(MonitorField::Dim, Json::Parse("false"), epoch);
+    const auto readyDim = q.TakeReady([](const MonitorRequest &r) { return r.field == MonitorField::Dim; });
+    Check(readyDim && q.Size() == 1 && q.Take()->value.Number() == -30,
+          "A monitor switch bypasses a rate-limited level without replaying old positions");
     q.Submit(MonitorField::Dim, Json::Parse("false"), epoch);
     q.Disarm();
     Check(!q.Take() && !q.Submit(MonitorField::Mute, Json::Parse("false"), epoch),
@@ -526,6 +557,9 @@ void MonitorTests()
 }
 #include "ChannelFeatureTests.h"
 #include "UpperControlTests.h"
+#include "ConfigTests.h"
+#include "PreferencesTests.h"
+#include "DesktopChannelStatusTests.h"
 } // namespace
 int main()
 {
@@ -541,6 +575,9 @@ int main()
         ChannelFeatureTests();
         ConsoleFeatureTests();
         UpperControlTests();
+        ConfigTests();
+        PreferencesTests();
+        DesktopChannelStatusTests();
         std::cout << "Apollo core: " << checks
                   << " checks passed. No sockets, audio, MIDI or EUCON initialized.\n";
         return 0;

@@ -421,6 +421,15 @@ Json ControlNumber(double value)
     text << std::setprecision(12) << value;
     return Json::Parse(text.str());
 }
+bool SamePermissionTarget(const Channel &a, const Channel &b)
+{
+    if (!ControlEligible(a) || !ControlEligible(b) || a.key != b.key || a.path != b.path ||
+        a.auxiliary != b.auxiliary || a.monitor != b.monitor)
+        return false;
+    // Talkback routing is device-global and may be rebound to another physical
+    // source. Do not carry authority across that identity change.
+    return (a.ioType != "TalkbackMic" && b.ioType != "TalkbackMic") || a.talkContext == b.talkContext;
+}
 bool ChangesChannelContext(ChannelAddress field)
 {
     return field.kind == ChannelField::Output || field.kind == ChannelField::Input ||
@@ -539,12 +548,20 @@ uint64_t ChannelQueue::Submit(ChannelAddress field, const Json &value, uint64_t 
 }
 std::optional<ChannelRequest> ChannelQueue::Take()
 {
+    return TakeReady([](const ChannelRequest &) { return true; });
+}
+std::optional<ChannelRequest> ChannelQueue::TakeReady(
+    const std::function<bool(const ChannelRequest &)> &ready)
+{
     if (!armed_ || pending_.empty())
         return {};
-    auto request = std::move(pending_.front());
-    pending_.pop_front();
-    if (std::chrono::steady_clock::now() - request.created >= std::chrono::milliseconds(500))
-        throw std::runtime_error("Control gesture expired; re-arm to continue");
+    const auto found = std::find_if(pending_.begin(), pending_.end(), ready);
+    if (found == pending_.end())
+        return {};
+    auto request = std::move(*found);
+    pending_.erase(found);
+    // The writer owns the final freshness check so it can discard one stale
+    // gesture without revoking the channel's explicitly granted permission.
     return request;
 }
 } // namespace apollo

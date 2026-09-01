@@ -1,11 +1,12 @@
 #include <windows.h>
+#include "../BridgeProductVersion.h"
 #include "resource.h"
 
 IDI_APP_ICON ICON "assets\\WindowsFaderBridge.ico"
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 0,2,0,0
- PRODUCTVERSION 0,2,0,0
+ FILEVERSION BRIDGE_PRODUCT_VERSION_COMMA
+ PRODUCTVERSION BRIDGE_PRODUCT_VERSION_COMMA
  FILEFLAGSMASK 0x3fL
 #ifdef _DEBUG
  FILEFLAGS VS_FF_DEBUG
@@ -22,11 +23,11 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "Lindelea\0"
             VALUE "FileDescription", "Windows Fader Bridge for EUCON\0"
-            VALUE "FileVersion", "0.2.0\0"
+            VALUE "FileVersion", BRIDGE_PRODUCT_VERSION_TEXT
             VALUE "InternalName", "WindowsFaderBridge\0"
             VALUE "OriginalFilename", "WindowsFaderBridge.exe\0"
             VALUE "ProductName", "Windows Fader Bridge for EUCON\0"
-            VALUE "ProductVersion", "0.2.0\0"
+            VALUE "ProductVersion", BRIDGE_PRODUCT_VERSION_TEXT
         END
     END
     BLOCK "VarFileInfo"

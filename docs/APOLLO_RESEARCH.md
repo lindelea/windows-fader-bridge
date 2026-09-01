@@ -16,6 +16,91 @@ is inserted into the audio signal path.
 The UA interface is private and version-sensitive. It is not a supported UA SDK.
 Apollo Bridge is an independent project, not an Avid or Universal Audio product.
 
+## Native Inserts Config hierarchy and plug-in power
+
+The complete official Knob Sets and plug-in configuration sections were
+rechecked before changing the model. Inserts Config is a hierarchy, not one
+large value table: a slot enters a folder/category page, a category enters a
+plug-in page, and the surface performs automatic pagination according to its
+physical knob count. The first project-owned choice is an explicit `NONE` cell;
+all remaining choices are one plug-in per cell. No surface width is assumed and
+Page/Back remain runtime-owned navigation.
+
+The installed SDK headers and official advanced example also confirm that the
+lower switch of a loaded insert uses the momentary/latch switch contract for
+plug-in enable/bypass. Application feedback sets both switch state and LED from
+the engine's `Power` value. Callback work remains queued to the owning thread.
+Loading or unloading an insert legitimately changes the child knob model; an
+already granted channel permission is now re-armed only when connection
+generation and stable channel identity are unchanged. Reconnects, routing/type
+changes, or a different channel still revoke permission.
+
+Physical S3 verification showed that the documented third-level folder child
+was published and its knob-top gesture reached EUCON, but the surface did not
+navigate from the folder display to the plug-in display. The production model
+therefore keeps the category information without depending on that unverified
+depth: each category is a filtered selector knob on level 2. Turning previews
+only that category, the lower `In` switch confirms the selected plug-in, and
+`NONE` remains the first fixed unload cell. Automatic Page and Back navigation
+remain runtime-owned.
+
+Read-only inspection of the locally running UA engine exposed 223 catalogue
+entries in this test installation: 127 reported `Authorized` and 96 reported an
+available but not-started demo. The selector continues to admit only entries
+whose live `Authorized` property is true, so browsing cannot silently begin a
+trial. Category placement now uses the engine's own `Categories` metadata and
+falls back to the previous name heuristic only when that metadata is absent.
+No catalogue data or UA-owned names are stored in the repository.
+
+Surface labels are derived presentation data only. The hardware label removes
+the non-distinguishing UAD/UADx/Universal Audio prefix, prioritizes model and
+edition tokens, and fits the result into the eight-character OLED field.
+Colliding abbreviations receive a stable numeric suffix. The configuration
+value sent back to the UA engine remains the untouched full plug-in name, so
+label abbreviation cannot redirect a load operation.
+
+## Native UNISON Config catalogue and lifecycle
+
+The custom UNISON knob set owns a documented configuration page rather than a
+second invented top-level category. The complete SDK guide Section 8, installed
+knob-cell array/layout/category declarations, and official EuConApp plug-in and
+instrument examples were checked before the change; EuConIO has no corresponding
+UNISON loader. The first Config member is marked with `NewConfigPage`, child
+selectors use `AddChild`, and pagination/Back remain runtime-owned. Construction
+and removal use the existing owner-thread model lifecycle. Primitive callbacks
+only enqueue to the existing serial Config controller.
+
+Read-only inspection of the current UA engine on 2026-09-01 found 47 catalogue
+entries whose native boolean `Unison` property was true; 25 also reported
+`Authorized=true`. No catalogue names or UA-owned content were retained. UNISON
+eligibility therefore requires both exact live properties. It is not inferred
+from a plug-in name, product category, or the ordinary-insert catalogue. NONE is
+the first explicit unload choice. Preset entries are accepted only from the
+currently loaded authorized plug-in's advertised file list.
+
+The write path is not a new arbitrary UA command surface: it reuses the existing
+allowlisted effect `EffectName`/`Preset` Config writer. Each operation re-reads
+the hardware identity, effect instance, current value and selected catalogue
+entry, issues one bounded request, then confirms the complete effect node.
+Uncertain completion is never retried. A refreshed plug-in topology invalidates
+the old callback epoch without downgrading the user's session-level permission.
+
+## Persistent sensitive permission across confirmed 48V refresh
+
+Physical testing exposed a permission-lifecycle defect rather than a UA write
+failure. Both 48V activation and deactivation were accepted and authoritatively
+read back by the engine, but the subsequent Input model refresh created a new
+callback epoch and cleared the already granted sensitive-control permission.
+The next activation was therefore rejected locally and never sent to UA.
+
+An explicitly granted Full/Custom policy now follows the same stable logical
+channel for the lifetime of the verified connection. Confirmed 48V, input/output
+routing, link-mode and plug-in topology refreshes rebuild their controls without
+asking for permission again. The callback epoch still changes, so stale gestures
+remain invalid. A disconnect, generation change, channel removal, logical identity
+change, talkback-master rebind or failed readback still locks the affected target;
+authorization is never inferred from feedback and no failed write is retried.
+
 ## EUCON implementation contract (recorded before adapter implementation)
 
 Concepts: node/processor lifecycle, primitive feedback, touch, Pan knob set,
@@ -656,3 +741,90 @@ was performed, and physical acceptance of this correction is still pending.
 The latter two are corroborating research, not manufacturer contracts. No source
 code from them is copied into this project. Avid SDK materials remain in their
 separately obtained private installation; obtain access through Avid.
+## Real-time mixing write path — 2026-09-01
+
+EUCON concept reviewed: primitive state callbacks, confirmation callbacks, touch
+state, callback threading and application-to-surface feedback. The complete
+relevant sections of the installed 2026.4 Getting Started guide, current
+`EuProcessor` and `EuPrimitiveControl` declarations, EuConIO channel example,
+EuConApp channel example and FAQ `KnobByDeltaExample` were consulted. EUCON calls
+`OnPrimitiveCallback` for each physical primitive state change; the application
+must update its corresponding parameter. The callback runs on an EUCON-created
+thread, so it copies the event to the existing owning queue. Touch suppresses
+competing application-to-surface feedback; it does not defer surface-to-application
+writes until release.
+
+The former ordinary control path performed complete remote discovery, one set and
+complete remote readback for every encoder/fader step. That serialized transaction
+made a live gesture sound and display late. Ordinary channel and Control Room
+controls now validate identity, shape, type, range, permission epoch and freshness
+from the observer's latest completed model immediately before one typed set. Level,
+pan, send level/pan, preamp gain, loaded insert parameters and UNISON parameters are
+coalesced at a maximum 100 Hz; only the newest unsent value for each typed address is
+retained. Mute, solo, bypass/power, source, record/monitor and other discrete audio
+controls dispatch immediately. The existing observer subscription is authoritative
+and corrects optimistic feedback after the engine publishes state.
+
+Plug-in load/unload, preset recall and CONFIG interface/routing settings remain
+transactional with fresh discovery and explicit post-write node confirmation.
+No uncertain write is replayed. Synthetic loopback regression verifies the live
+path, rejection/disconnect behavior, independent permissions and the unchanged
+CONFIG confirmation path; core tests and the isolated native build pass. Physical
+S3 and Avid Control acceptance of timing, final feedback and all audible control
+families remains required.
+
+The first physical follow-up found Control Room level still stepped. The remaining
+latency was local: callback events waited for the desktop's 33 ms UI timer before
+reaching the monitor queue, then met the writer interval. The callback inbox now
+posts a coalesced owner-thread message as soon as an event arrives. SDK processing
+remains on the same owner thread, but audio dispatch is independent of UI refresh.
+Continuous writers now use a 10 ms interval; acknowledgements are drained before
+the next live write instead of blocking the current audible step.
+
+Plug-in and UNISON `NormalizedValue` remains a real-time transport value, not a
+display unit. It is never shown as a percentage. OLED value text now comes only
+from UAD's corresponding `StringValue`, preserving native dB, Hz, ms, ratio and
+mode semantics. A normalized write is dispatched immediately and does not wait
+for that text response; while the authoritative text is pending the value line is
+blank rather than showing a fabricated unit.
+
+Touch ownership gates only adapter-to-surface position feedback. It does not gate
+UAD `StringValue` updates: engineering-unit text continues to refresh while the
+operator holds and turns a plug-in or UNISON encoder.
+
+Loaded insert and UNISON preset CONFIG pages no longer use one rotary selector.
+Every advertised preset file is a fixed knob cell in the same CONFIG array;
+EUCON exposes the available OLEDs and Page navigation, and `In` recalls the preset
+shown on that cell. Folder catalogue entries and unadvertised save operations
+remain excluded, and preset recall retains the transactional CONFIG writer.
+
+## Permission and multi-control audit — 2026-09-01
+
+The saved access profile is session authority, not a one-shot queue token. A stale
+gesture, rejected set, route refresh, input-mode refresh, phantom context change or
+plug-in topology change discards only work derived from the old model. Once the
+observer publishes a fresh matching logical channel, the desktop reconciler creates
+a new callback epoch and restores the user's selected scope. A failed channel arm is
+now transactional: validation completes before the permission entry is published,
+so a transient incomplete model cannot leave a tracked-but-unarmed shell that blocks
+future reconciliation.
+
+The former 10 ms sleep was global to the channel writer. It limited one control to
+100 Hz but also serialized unrelated faders, pans and sends. The live writer now
+tracks the dispatch interval per typed channel/address; a delayed repeat of one
+parameter cannot block a different continuous control or a switch queued behind it.
+Control Room uses the same per-field policy. Replies are checked on an independent
+deadline without delaying the audible set, and an ambiguous or rejected write is
+never replayed.
+
+An EUCON adapter exception still destroys the failed node through the documented
+owner lifecycle and discards all queued gestures. With automatic connection enabled,
+the application now rebuilds the adapter after bounded 1/2/4/8-second backoff instead
+of silently changing the saved access profile or requiring all controls to be granted
+again. Successful reconstruction binds fresh epochs only; it never repeats a UAD
+write that may already have executed.
+
+Pure queue/model tests, synthetic loopback transport tests, desktop settings tests
+and an isolated Release EUCON build pass. Physical acceptance must cover simultaneous
+multi-fader/encoder moves, S3 plus Avid Control attachment, transient surface loss,
+and confirmation that no touched control receives competing motor/ring feedback.

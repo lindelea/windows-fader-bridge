@@ -77,6 +77,29 @@ inline void AddMonitorFixture(apollo::NodeMap &nodes, const std::string &device 
       "MixToMono":{"type":"bool","value":false}}})");
 }
 
+inline void AddConfigurationFixture(apollo::NodeMap &nodes, const std::string &device = "/devices/3")
+{
+    using apollo::Json;
+    auto &root = nodes["/"].object["properties"].object;
+    root["ClipHold"] = Json::Parse(R"({"type":"string","value":"NONE","values":["NONE","2 SEC","5 SEC"]})");
+    root["PostFaderMetering"] = Json::Parse(R"({"type":"bool","value":false})");
+    root["SampleRate"] = Json::Parse(R"({"type":"int","value":48000,"values":[{"value":48000,"string":"48 kHz"},{"value":96000,"string":"96 kHz"}]})");
+    auto &outputs = nodes[device + "/outputs"].object["children"].object;
+    outputs["44"] = Json::Parse("{}");
+    outputs["46"] = Json::Parse("{}");
+    nodes[device + "/outputs/44"] = Json::Parse(R"({"properties":{"IOType":{"value":"Cue"},"Name":{"value":"CUE 2"},"Stereo":{"value":true},"Active":{"value":true},"MixToMono":{"type":"bool","value":false},"MixInSource":{"type":"string","value":"mon","values":["mon","cue"]},"OutputDestination":{"type":"string","value":"None","values":["None","Line 9-10"]}}})");
+    nodes[device + "/outputs/46"] = Json::Parse(R"({"properties":{"IOType":{"value":"Headphone"},"Name":{"value":"HP 2"},"Stereo":{"value":true},"Active":{"value":false},"MixInSource":{"type":"string","value":"cue2","values":["none","cue2","cue3"]}}})");
+    nodes["/plugins"] = Json::Parse(R"({"children":{"7":{},"8":{}}})");
+    nodes["/plugins/7"] = Json::Parse(R"({"properties":{"Type":{"value":"plugin"},"Name":{"value":"Fixture Processor"},"Unison":{"type":"bool","value":true},"Authorized":{"value":true},"Preset":{"values":[{"value":"Neutral","type":"file"},{"value":"Wide","type":"file"},{"value":"Folder","type":"folder"}]}}})");
+    nodes["/plugins/8"] = Json::Parse(R"({"properties":{"Type":{"value":"plugin"},"Name":{"value":"Not Licensed"},"Unison":{"type":"bool","value":true},"Authorized":{"value":false}}})");
+    nodes[device + "/inputs/0/effects/2"].object["properties"].object["Preset"] =
+        Json::Parse(R"({"type":"string","value":"Neutral"})");
+    const auto unison = device + "/inputs/0/preamps/0/effects/0";
+    nodes[device + "/inputs/0/preamps/0/effects"] = Json::Parse(R"({"children":{"0":{}}})");
+    nodes[unison] = Json::Parse(
+        R"({"properties":{"Type":{"type":"string","value":"effect"},"EffectInstance":{"type":"pointer","readonly":true,"value":0},"EffectName":{"type":"string","value":""},"Preset":{"type":"string","value":""}}})");
+}
+
 inline apollo::NodeMap ConsoleFixture(const std::string &device = "/devices/3")
 {
     using apollo::Json;

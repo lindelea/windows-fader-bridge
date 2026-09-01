@@ -29,5 +29,7 @@ if (-not $CoreOnly) {
     $nativeIntermediate = Join-Path $projectRoot "obj\$NativeOutputName\$Configuration\"
     & $msbuild (Join-Path $projectRoot 'src\ApolloBridge.EuconHost\ApolloBridge.EuconHost.vcxproj') /m /t:Build "/p:Configuration=$Configuration" /p:Platform=x64 $solutionDir "/p:AvidEuconSdkDir=$AvidEuconSdkDir" "/p:OutDir=$nativeOutput" "/p:IntDir=$nativeIntermediate" /v:minimal
     if ($LASTEXITCODE -ne 0) { throw 'Apollo EUCON host build failed.' }
+    & (Join-Path $nativeOutput 'ApolloBridge.Eucon.exe') --desktop-self-test | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw 'Desktop settings tests failed.' }
     Write-Host "Built: ${nativeOutput}ApolloBridge.Eucon.exe"
 }

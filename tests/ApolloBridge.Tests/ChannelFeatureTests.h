@@ -44,6 +44,14 @@ void ConsoleFeatureTests()
     lineSourcePreamp.ioType = "Line";
     Check(ChannelColor(lineSourcePreamp) == 0x00FF00,
           "Preamp-equipped input keeps its family color when selecting line source");
+    auto refreshedPermission = mic;
+    refreshedPermission.ioType = "Line";
+    refreshedPermission.destination = "Line 1-2";
+    refreshedPermission.stereo = !refreshedPermission.stereo;
+    Check(SamePermissionTarget(mic, refreshedPermission),
+          "Permission follows stable channel across input, route and link refresh");
+    refreshedPermission.key += ".replacement";
+    Check(!SamePermissionTarget(mic, refreshedPermission), "Permission never crosses logical channel identity");
     const ChannelAddress phantom{ChannelField::Phantom, "0"};
     Check(mic.preamps[0].phantom && !mic.reference && line.reference && !line.input,
           "Mic phantom and plain line reference are distinct capabilities");
@@ -206,6 +214,11 @@ void ChannelFeatureTests()
     Check(queue.Submit({ChannelField::SendLevel, "9"}, ControlNumber(-10), epoch) != 0 && queue.Size() == 2,
           "Different send addresses never coalesce together");
     Check(queue.Submit(gain, ControlNumber(-22), epoch) != 0 && queue.Size() == 2, "Same send coalesces");
+    const auto readyGain = queue.TakeReady([&](const ChannelRequest &r) { return r.field == gain; });
+    Check(readyGain && readyGain->value.Number() == -22 && queue.Size() == 1,
+          "A ready continuous address bypasses an independently delayed address");
+    Check(queue.Take()->field == ChannelAddress(ChannelField::SendLevel, "9"),
+          "Per-address scheduling preserves the other queued control");
     snapshot.channels[0].inserts[0].identity = "new-instance";
     Check(!queue.Valid(snapshot), "Plugin replacement revokes armed channel scope");
     auto &properties = nodes[path + "/preamps/0"].object["properties"].object;

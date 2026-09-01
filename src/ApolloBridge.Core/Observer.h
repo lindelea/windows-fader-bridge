@@ -18,6 +18,7 @@ class Observer
     ~Observer();
     void Start();
     void Stop();
+    void EnableConfiguration(); // Before Start only; opt-in catalog discovery.
     Snapshot Latest() const;
     void Refresh()
     {
@@ -28,6 +29,7 @@ class Observer
     void Run();
     void Publish(Snapshot snapshot);
     const uint16_t port_;
+    bool configuration_ = false;
     std::atomic<bool> stop_ = false;
     std::atomic<bool> refresh_ = false;
     std::thread thread_;

@@ -1,5 +1,6 @@
 #include "ApplicationShell.h"
 
+#include "../BridgeProductVersion.h"
 #include "DiagnosticLog.h"
 #include "resource.h"
 #include "WindowsCommandExecutor.h"
@@ -21,7 +22,7 @@ namespace
 {
 constexpr wchar_t kWindowClass[] = L"WindowsFaderBridge.MainWindow";
 constexpr wchar_t kProductName[] = L"Windows Fader Bridge for EUCON";
-constexpr wchar_t kProductVersion[] = L"0.2.0";
+constexpr wchar_t kProductVersion[] = BRIDGE_PRODUCT_VERSION_DISPLAY_W;
 constexpr wchar_t kRunKey[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 constexpr wchar_t kRunValue[] = L"WindowsFaderBridge";
 constexpr UINT kTrayCallbackMessage = WM_APP + 100U;
@@ -43,7 +44,8 @@ constexpr COLORREF kCard = RGB(23, 28, 37);
 constexpr COLORREF kCardBorder = RGB(42, 50, 64);
 constexpr COLORREF kText = RGB(239, 244, 248);
 constexpr COLORREF kMutedText = RGB(151, 162, 179);
-constexpr COLORREF kCyan = RGB(39, 216, 226);
+// EUCON edition accent, shared visually with its purple three-fader icon.
+constexpr COLORREF kAccent = RGB(155, 108, 255);
 constexpr COLORREF kGreen = RGB(65, 211, 140);
 constexpr COLORREF kRed = RGB(247, 101, 112);
 
@@ -583,7 +585,7 @@ void ApplicationShell::Paint()
         statusDetail, smallFont_, kMutedText);
     RECT countRect{ statusCard.right - Scale(window_, 170), statusCard.top + Scale(window_, 12),
         statusCard.right - Scale(window_, 22), statusCard.top + Scale(window_, 49) };
-    DrawTextLine(memory, std::to_wstring(activeCount_), countRect, titleFont_, kCyan,
+    DrawTextLine(memory, std::to_wstring(activeCount_), countRect, titleFont_, kAccent,
         DT_RIGHT);
     RECT countLabel{ countRect.left, statusCard.top + Scale(window_, 47), countRect.right,
         statusCard.bottom - Scale(window_, 10) };
@@ -604,7 +606,7 @@ void ApplicationShell::Paint()
         channelsCard.right - Scale(window_, paged ? 200 : 18),
         channelsCard.top + Scale(window_, 43) };
     DrawTextLine(memory, monoAudioEnabled_ ? L"MONO OUTPUT" : L"STEREO OUTPUT", monoRect,
-        smallFont_, monoAudioEnabled_ ? kCyan : kMutedText, DT_RIGHT);
+        smallFont_, monoAudioEnabled_ ? kAccent : kMutedText, DT_RIGHT);
     if (paged)
     {
         RECT pageRect{ channelsCard.right - Scale(window_, 190),
@@ -651,7 +653,7 @@ void ApplicationShell::Paint()
         if (strip->isDefault) flags += L"DEFAULT  ";
         RECT channelFlags{ channelsCard.right - Scale(window_, 260), top,
             channelsCard.right - Scale(window_, 92), top + rowHeight };
-        DrawTextLine(memory, flags, channelFlags, smallFont_, strip->muted ? kRed : kCyan,
+        DrawTextLine(memory, flags, channelFlags, smallFont_, strip->muted ? kRed : kAccent,
             DT_RIGHT);
         RECT channelVolume{ channelsCard.right - Scale(window_, 82), top,
             channelsCard.right - Scale(window_, 18), top + rowHeight };
@@ -699,15 +701,15 @@ void ApplicationShell::DrawStartupControl(const DRAWITEMSTRUCT& item) const
         boxSize) / 2, item.rcItem.left + boxSize,
         item.rcItem.top + (item.rcItem.bottom - item.rcItem.top + boxSize) / 2 };
     const auto checked = startupEnabled_;
-    const auto fill = CreateSolidBrush(checked ? kCyan : RGB(14, 18, 25));
-    const auto pen = CreatePen(PS_SOLID, 1, checked ? kCyan : RGB(88, 99, 116));
+    const auto fill = CreateSolidBrush(checked ? kAccent : RGB(14, 18, 25));
+    const auto pen = CreatePen(PS_SOLID, 1, checked ? kAccent : RGB(88, 99, 116));
     const auto oldBrush = SelectObject(dc, fill);
     const auto oldPen = SelectObject(dc, pen);
     RoundRect(dc, box.left, box.top, box.right, box.bottom, Scale(window_, 4),
         Scale(window_, 4));
     if (checked)
     {
-        const auto checkPen = CreatePen(PS_SOLID, Scale(window_, 2), RGB(8, 32, 36));
+        const auto checkPen = CreatePen(PS_SOLID, Scale(window_, 2), RGB(28, 17, 53));
         SelectObject(dc, checkPen);
         MoveToEx(dc, box.left + Scale(window_, 4), box.top + Scale(window_, 9), nullptr);
         LineTo(dc, box.left + Scale(window_, 8), box.top + Scale(window_, 13));

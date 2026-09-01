@@ -1,6 +1,7 @@
 #pragma once
 #include "Model.h"
 #include <deque>
+#include <functional>
 
 namespace apollo
 {
@@ -37,11 +38,13 @@ struct MonitorRequest
 class MonitorQueue
 {
   public:
-    uint64_t Arm(const Snapshot &snapshot, const std::string &key);
+    uint64_t Arm(const Snapshot &snapshot, const std::string &key,
+                 std::optional<double> ceiling = std::nullopt);
     void Disarm();
     bool Valid(const Snapshot &snapshot) const;
     uint64_t Submit(MonitorField field, const Json &value, uint64_t epoch);
     std::optional<MonitorRequest> Take();
+    std::optional<MonitorRequest> TakeReady(const std::function<bool(const MonitorRequest &)> &ready);
     uint64_t Epoch() const
     {
         return armed_ ? epoch_ : 0;

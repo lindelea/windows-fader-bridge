@@ -181,7 +181,7 @@ std::string MonitorCommand(const Monitor &m, MonitorField field, const Json &val
 {
     const auto &p = FieldParameter(m, field);
     if (!MonitorEligible(m) || !std::isfinite(ceiling) || ceiling < *m.level->minimum || ceiling > *m.level->maximum ||
-        m.level->value.Number() > ceiling + 0.001 || !MonitorFieldAvailable(m, field))
+        !MonitorFieldAvailable(m, field))
         throw std::invalid_argument("Monitor context or permission ceiling is unavailable");
     std::string scalar;
     if (field == MonitorField::Level)
@@ -212,8 +212,6 @@ std::string MonitorCommand(const Monitor &m, MonitorField field, const Json &val
         if (value.kind != Json::Kind::Boolean || p->value.kind != Json::Kind::Boolean)
             throw std::invalid_argument("Expected Boolean monitor value");
         scalar = value.Bool() ? "true" : "false";
-        if (field == MonitorField::Talk && value.Bool() && m.talkbackToMonitor->value.Bool())
-            throw std::invalid_argument("Disable Talkback to Monitor in Console before enabling TALK");
     }
     return "set " + p->path + " " + scalar + '\0';
 }
@@ -236,14 +234,20 @@ bool SameMonitorValue(MonitorField field, const Json &a, const Json &b)
         return a.kind == Json::Kind::String && b.kind == Json::Kind::String && a.scalar == b.scalar;
     return SameControlValue(field == MonitorField::Level || field == MonitorField::DimAmount ? ChannelField::Level : ChannelField::Mute, a, b);
 }
-uint64_t MonitorQueue::Arm(const Snapshot &s, const std::string &key)
+uint64_t MonitorQueue::Arm(const Snapshot &s, const std::string &key, std::optional<double> ceiling)
 {
     Disarm();
     if (!FreshMonitorState(s) || s.monitors.size() != 1 || s.monitors.front().key != key ||
         !MonitorEligible(s.monitors.front()))
         throw std::runtime_error("One fresh, supported stereo main monitor is required");
     target_ = s.monitors.front();
-    ceiling_ = target_.level->value.Number();
+    // The diagnostic entry point retains its original arm-time ceiling. The
+    // desktop may explicitly choose a ceiling, never above native unity (0 dB).
+    const double chosen = ceiling.value_or(target_.level->value.Number());
+    if (!std::isfinite(chosen) || chosen < *target_.level->minimum ||
+        chosen > std::min(0.0, *target_.level->maximum))
+        throw std::invalid_argument("Monitor ceiling is outside the supported range");
+    ceiling_ = chosen;
     generation_ = s.generation;
     armed_ = true;
     return epoch_;
@@ -257,8 +261,7 @@ void MonitorQueue::Disarm()
 bool MonitorQueue::Valid(const Snapshot &s) const
 {
     return armed_ && FreshMonitorState(s) && s.generation == generation_ && s.monitors.size() == 1 &&
-           SameMonitorTarget(target_, s.monitors.front()) &&
-           s.monitors.front().level->value.Number() <= ceiling_ + 0.001;
+           SameMonitorTarget(target_, s.monitors.front());
 }
 uint64_t MonitorQueue::Submit(MonitorField field, const Json &value, uint64_t epoch)
 {
@@ -273,12 +276,20 @@ uint64_t MonitorQueue::Submit(MonitorField field, const Json &value, uint64_t ep
 }
 std::optional<MonitorRequest> MonitorQueue::Take()
 {
+    return TakeReady([](const MonitorRequest &) { return true; });
+}
+std::optional<MonitorRequest> MonitorQueue::TakeReady(
+    const std::function<bool(const MonitorRequest &)> &ready)
+{
     if (!armed_ || pending_.empty())
         return {};
-    auto r = std::move(pending_.front());
-    pending_.pop_front();
-    if (std::chrono::steady_clock::now() - r.created >= std::chrono::milliseconds(500))
-        throw std::runtime_error("Monitor gesture expired; unlock again to continue");
+    const auto found = std::find_if(pending_.begin(), pending_.end(), ready);
+    if (found == pending_.end())
+        return {};
+    auto r = std::move(*found);
+    pending_.erase(found);
+    // The writer owns the final freshness check so it can discard one stale
+    // gesture without revoking the Control Room permission.
     return r;
 }
 } // namespace apollo

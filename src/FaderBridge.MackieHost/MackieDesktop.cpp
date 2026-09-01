@@ -1,4 +1,5 @@
 #include "MackieDesktop.h"
+#include "../BridgeProductVersion.h"
 #include "MackieApplication.h"
 #include "MackieCommandText.h"
 #include "DiagnosticLog.h"
@@ -182,11 +183,11 @@ void MackieDesktop::Paint(HDC dc)
 {
     RECT rc{};GetClientRect(window_,&rc);FillRect(dc,&rc,background_);RECT side{0,0,S(224),rc.bottom};auto sb=CreateSolidBrush(Side);FillRect(dc,&side,sb);DeleteObject(sb);
     auto line=CreatePen(PS_SOLID,1,Edge);auto old=SelectObject(dc,line);MoveToEx(dc,S(224),0,nullptr);LineTo(dc,S(224),rc.bottom);SelectObject(dc,old);DeleteObject(line);
-    DrawIconEx(dc,S(24),S(30),LoadIconW(app_.instance_,MAKEINTRESOURCEW(1)),S(42),S(42),0,nullptr,DI_NORMAL);
-    Text(dc,L"FADER BRIDGE",78,28,134,24,Ink,0);Text(dc,L"MACKIE CONTROL",78,52,138,20,Amber,4);
+    DrawIconEx(dc,S(20),S(31),LoadIconW(app_.instance_,MAKEINTRESOURCEW(1)),S(40),S(40),0,nullptr,DI_NORMAL);
+    Text(dc,L"Windows Fader Bridge",70,28,146,24,Ink,1);Text(dc,L"for Mackie Control",70,52,146,20,Amber,4);
     Text(dc,T(L"工作区",L"WORKSPACE"),32,104,160,22,Muted,4);Text(dc,T(L"设置",L"SETTINGS"),32,187,160,22,Muted,4);
-    const wchar_t* zh[]={L"通道总览",L"通用设置",L"设备",L"按键分配",L"旋钮分配",L"Jog 与方向控制",L"高级",L"关于 Fader Bridge"};
-    const wchar_t* en[]={L"Overview",L"General",L"Devices",L"Button mapping",L"Encoder mapping",L"Jog & directions",L"Advanced",L"About Fader Bridge"};
+    const wchar_t* zh[]={L"通道总览",L"通用设置",L"设备",L"按键分配",L"旋钮分配",L"Jog 与方向控制",L"高级",L"关于"};
+    const wchar_t* en[]={L"Overview",L"General",L"Devices",L"Button mapping",L"Encoder mapping",L"Jog & directions",L"Advanced",L"About"};
     const int x=256,w=width_-288,bottom=height_-72;
     Text(dc,T(zh[page_],en[page_]),x,36,w-(page_==0?190:0),42,Ink,2);
     if(page_==0)
@@ -251,7 +252,7 @@ void MackieDesktop::Paint(HDC dc)
     {
         Panel(dc,x,132,w,360,Card,Edge);DrawIconEx(dc,S(x+24),S(158),LoadIconW(app_.instance_,MAKEINTRESOURCEW(1)),S(64),S(64),0,nullptr,DI_NORMAL);
         Text(dc,L"Windows Fader Bridge",x+112,158,w-136,34,Ink,2);Text(dc,L"for Mackie Control",x+112,200,w-136,26,Amber,0);
-        Text(dc,L"Lindelea  /  Open source  /  v0.1",x+24,379,w-48,26,Muted,1);
+        Text(dc,L"Lindelea  /  Open source  /  " BRIDGE_PRODUCT_VERSION_DISPLAY_W,x+24,379,w-48,26,Muted,1);
     }
     if(!notice_.empty()&&GetTickCount64()<noticeUntil_)Text(dc,notice_,x,height_-40,w,28,noticeError_?Red:Amber,1);
     else if(Editing())Text(dc,T(L"编辑模式 · 输入预览",L"EDIT MODE · INPUT PREVIEW"),x,height_-40,w,28,Muted,1);

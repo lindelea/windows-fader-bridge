@@ -24,6 +24,12 @@ struct ChannelCell
     bool lowerInverted = false;
     std::optional<std::string> lowerChoice;
     std::vector<ChannelCell> children;
+    bool configStart = false;
+    // A preview has no command address. Never infer writes from display text.
+    std::string readOnlyGlobal;
+    std::string configKey;
+    int configChoice = -1;
+    std::vector<int> configChoices;
 };
 struct ChannelKnobSet
 {

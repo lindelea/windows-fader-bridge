@@ -147,8 +147,9 @@ over the older example's different ordering. No vendor source is included here.
   contract and the official common knob-cell initializer; physical release must
   clear touch. Re-read guide section 7 before this callback-state change.
 - Preserve SDK return codes in diagnostics. Exceptions unwind registration.
-  Rejected, expired, changed-identity or unconfirmed writes revoke permission;
-  possibly executed writes are never retried.
+  Rejected, changed-identity, expired or unconfirmed operations discard their
+  own pending work. The desktop preserves the user's explicitly selected access
+  and rebinds from a fresh model; possibly executed writes are never retried.
 
 ## Apollo evidence and verification boundary
 
@@ -170,3 +171,90 @@ fresh per-write check remain mandatory; no manufacturer-name branch is used.
 While the owner is away, tests use an isolated synthetic engine only. Real Apollo
 routing, monitor level, sends, preamps and plug-ins must not be changed. Builds
 go to a new output directory and do not replace or launch the running bridge.
+
+## Knob value and switch presentation contract - 2026-09-01
+
+Concepts: primitive value text, temporary encoder text, knob-cell upper/lower
+switches, LEDs and peer knobs. Re-read the guide's primitive-control and complete
+knob-set sections, the installed EuPrimitiveControl, EuPrimitiveKnob,
+EuPrimitiveSwitch, EuControlKnobCell and EuControlKnobCellArray declarations,
+then checked EuConIO before EuConApp and the focused peer-knob example. The Avid
+S3 guide was used only to confirm the physical mapping of In and Sel.
+
+- A knob's numeric/index table is the control value and ring source. Its 4-, 8-
+  and long strings provide the temporary value text selected by EUCON while the
+  encoder is touched or moved. The label primitive remains the stable parameter
+  name; callback code must not rewrite it on the EUCON callback thread.
+- Publish explicit dB strings for send level, preamp gain, Control Room level and
+  DIM amount. Use `-INF` only for a real fader floor; retain signed dB values for
+  finite attenuation. Pan and plug-in choice/percentage text keep their existing
+  semantic formats.
+- A binary parameter is an upper/lower switch plus its LED, not a fake knob or
+  progress bar. Its value table also carries OFF/ON strings for surfaces that
+  present switch state text. Switch-only cells keep the encoder ring off.
+- S3 In maps to the knob-cell lower switch. S3 Sel maps to the upper switch and
+  is intended for a genuine secondary parameter/state, such as an EQ F/Q peer,
+  stereo Pan peer, or per-send pre/post. Encoder press is the knob-top switch:
+  it remains EUCON hierarchy navigation for cells with children, while a Pan
+  cell without children uses a documented one-shot top switch to reset its own
+  mono/left/right parameter to center. These are distinct primitives.
+- Apollo currently supplies a verified stereo Pan peer, so Sel is meaningful
+  there. It does not expose a verified per-send pre/post parameter or plug-in
+  peer relationship; do not populate Sel merely to make every button active.
+  Apollo's AUX return pre/post is bus-wide and remains in Input as previously
+  agreed, not misrepresented as per-send pre/post.
+- Pan keeps the predefined `kNAM_Pan` knob set and the native left/right Pan
+  layout tags. Mono publishes one left/mono cell; stereo publishes independent
+  left and right peer cells. Pressing the active Pan encoder resets only that
+  cell to `C` (native value zero), so centering one stereo leg cannot move the
+  other. The channel-level `kNAM_PanClear` semantic clears a whole panner and is
+  not substituted for this leg-specific encoder action.
+- All Config OLED labels and choice text are uppercase for consistent S3
+  legibility. This is display-only: native UAD enum strings, including the
+  hardware Function-switch assignment value, remain byte-for-byte unchanged
+  when written.
+
+The isolated Release build is
+`artifacts/uad-value-display-review/Release/ApolloBridge.Eucon.exe`. Core tests
+pass 15,290 checks, transport tests pass, and desktop settings pass 12 checks.
+The expanded real-SDK text/readback regression compiled but was not run while
+the production-identity bridge remained active. No running process, EuControl
+state or Apollo parameter was changed. Physical S3 and Avid Control acceptance
+is still required for the temporary-value timing and switch presentation.
+
+Live S3 observation later that day showed that the surface does not render a
+knob-cell switch value table as a separate OLED toggle or persistent OFF/ON
+readout. The In LED reflects the lower switch correctly, while the fixed empty
+encoder-region outline remains even with the ring set to Off. Treat that outline
+as surface chrome, not parameter progress. A short trial that appended OFF/ON to
+the persistent OLED label reduced clarity and was removed by user decision.
+Switch-only cells retain their plain parameter name and use the In LED as the
+authoritative state indication.
+
+## Pre-write gesture lifetime correction - 2026-09-01
+
+Live diagnostics proved that the former 500 ms pre-write deadline could expire
+during ordinary scheduling and incorrectly disarm the whole channel or Control
+Room permission. This was a local policy fault, not a UA rejection or a changed
+device identity.
+
+- Per-field coalescing remains in place, so rapid encoder/fader input still
+  produces one latest absolute target rather than flooding the engine.
+- A request now has a five-second pre-write lifetime. Both the EUCON dispatch
+  path and the writer enforce it.
+- An expired request is never sent and only that request is removed. It does not
+  change the permission epoch, clear other fields, or force the user to unlock
+  Control Room again.
+- Identity/capability changes, a definite UA rejection, and uncertain
+  post-write readback still revoke the affected permission. Possibly executed
+  writes are still never retried.
+- Queue extraction no longer owns a separate fatal timeout; the writer performs
+  the single final freshness decision and can clean up the matching pending
+  state without conflating cancellation with an unsafe write.
+
+The isolated Release build is
+`artifacts/uad-control-stability-review/Release/ApolloBridge.Eucon.exe`.
+Core tests pass 15,290 checks, transport tests cover nonfatal expired channel
+and Control Room requests, and desktop settings pass 12 checks. The active old
+process was not replaced while the user was operating it; physical S3 and Avid
+Control acceptance remains required.

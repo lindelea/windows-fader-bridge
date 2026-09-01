@@ -36,6 +36,7 @@ class ReadOnlyClient
   private:
     friend class ChannelWriteClient;
     friend class MonitorWriteClient;
+    friend class ConfigWriteClient;
     void SendBytes(const std::string &command);
     void SendRead(std::string_view verb, const std::string &path);
     bool Wait(bool writing, int milliseconds);
