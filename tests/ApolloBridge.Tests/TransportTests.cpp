@@ -685,57 +685,59 @@ void MonitorWrites()
     observer.Start();
     Until([&] { return observer.Latest().connected && observer.Latest().monitors.size() == 1; }, 4000,
           "Monitor fixture observed");
-    MonitorController controller(observer, engine.port);
-    ChannelController channels(observer, engine.port);
     const auto state = observer.Latest();
     const auto m = state.monitors.front();
-    channels.Arm(state.channels.front().key);
-    Check(!controller.Epoch() &&
-              !controller.Submit(m.key, MonitorField::Level, ControlNumber(-40), channels.Epoch()),
-          "Channel authorization cannot unlock monitor");
-    Check(engine.writes == 0, "Locked monitor sends zero writes");
-    controller.Arm(m.key);
-    Check(engine.writes == 0 && controller.Status().ceiling == -30,
-          "Unlock captures ceiling without writing");
-    uint64_t expected = 0;
-    for (auto field : {MonitorField::Level, MonitorField::Mute, MonitorField::Dim, MonitorField::Mono})
     {
-        const auto value = field == MonitorField::Level ? ControlNumber(-40) : Json::Parse("true");
-        Check(controller.Submit(m.key, field, value, controller.Epoch()), "Monitor gesture queued");
+        MonitorController controller(observer, engine.port);
+        ChannelController channels(observer, engine.port);
+        channels.Arm(state.channels.front().key);
+        Check(!controller.Epoch() &&
+                  !controller.Submit(m.key, MonitorField::Level, ControlNumber(-40), channels.Epoch()),
+              "Channel authorization cannot unlock monitor");
+        Check(engine.writes == 0, "Locked monitor sends zero writes");
+        controller.Arm(m.key);
+        Check(engine.writes == 0 && controller.Status().ceiling == -30,
+              "Unlock captures ceiling without writing");
+        uint64_t expected = 0;
+        for (auto field : {MonitorField::Level, MonitorField::Mute, MonitorField::Dim, MonitorField::Mono})
+        {
+            const auto value = field == MonitorField::Level ? ControlNumber(-40) : Json::Parse("true");
+            Check(controller.Submit(m.key, field, value, controller.Epoch()), "Monitor gesture queued");
+            ++expected;
+            Until([&] { return controller.Status().confirmed == expected || !controller.Epoch(); }, 4000,
+                  "Monitor completion");
+            Check(controller.Status().confirmed == expected && controller.Status().error.empty(),
+                  "Monitor node readback verified");
+        }
+        for (const auto &operation :
+             std::vector<std::pair<MonitorField, Json>>{{MonitorField::DimAmount, ControlNumber(26)},
+                                                        {MonitorField::Source, Json::Parse("\"cue1\"")},
+                                                        {MonitorField::Source, Json::Parse("\"cue2\"")},
+                                                        {MonitorField::Source, Json::Parse("\"cue3\"")},
+                                                        {MonitorField::Source, Json::Parse("\"cue4\"")},
+                                                        {MonitorField::Source, Json::Parse("\"mon\"")},
+                                                        {MonitorField::Talk, Json::Parse("true")},
+                                                        {MonitorField::Talk, Json::Parse("false")}})
+        {
+            Check(controller.Submit(m.key, operation.first, operation.second, controller.Epoch()),
+                  "Extended monitor gesture queued");
+            ++expected;
+            Until([&] { return controller.Status().confirmed == expected || !controller.Epoch(); }, 4000,
+                  "Extended monitor completion");
+            Check(controller.Status().confirmed == expected && controller.Status().error.empty(),
+                  "Root/device/output writes independently confirmed");
+        }
+        Check(controller.Submit(m.key, MonitorField::Level, ControlNumber(-2), controller.Epoch()),
+              "Ceiling gesture accepted");
         ++expected;
         Until([&] { return controller.Status().confirmed == expected || !controller.Epoch(); }, 4000,
-              "Monitor completion");
-        Check(controller.Status().confirmed == expected && controller.Status().error.empty(),
-              "Monitor node readback verified");
+              "Ceiling completion");
+        Check(controller.Status().confirmed == expected, "Clamped monitor value confirmed");
+        const auto oldEpoch = controller.Epoch();
+        controller.Disarm();
+        Check(!controller.Submit(m.key, MonitorField::Mute, Json::Parse("false"), oldEpoch),
+              "Locked rejects prior gesture");
     }
-    for (const auto &operation :
-         std::vector<std::pair<MonitorField, Json>>{{MonitorField::DimAmount, ControlNumber(26)},
-                                                    {MonitorField::Source, Json::Parse("\"cue1\"")},
-                                                    {MonitorField::Source, Json::Parse("\"cue2\"")},
-                                                    {MonitorField::Source, Json::Parse("\"cue3\"")},
-                                                    {MonitorField::Source, Json::Parse("\"cue4\"")},
-                                                    {MonitorField::Source, Json::Parse("\"mon\"")},
-                                                    {MonitorField::Talk, Json::Parse("true")},
-                                                    {MonitorField::Talk, Json::Parse("false")}})
-    {
-        Check(controller.Submit(m.key, operation.first, operation.second, controller.Epoch()),
-              "Extended monitor gesture queued");
-        ++expected;
-        Until([&] { return controller.Status().confirmed == expected || !controller.Epoch(); }, 4000,
-              "Extended monitor completion");
-        Check(controller.Status().confirmed == expected && controller.Status().error.empty(),
-              "Root/device/output writes independently confirmed");
-    }
-    Check(controller.Submit(m.key, MonitorField::Level, ControlNumber(-2), controller.Epoch()),
-          "Ceiling gesture accepted");
-    ++expected;
-    Until([&] { return controller.Status().confirmed == expected || !controller.Epoch(); }, 4000,
-          "Ceiling completion");
-    Check(controller.Status().confirmed == expected, "Clamped monitor value confirmed");
-    const auto oldEpoch = controller.Epoch();
-    controller.Disarm();
-    Check(!controller.Submit(m.key, MonitorField::Mute, Json::Parse("false"), oldEpoch),
-          "Locked rejects prior gesture");
     std::atomic<bool> stop = false;
     {
         ReadOnlyClient reader(stop, engine.port);
@@ -787,6 +789,10 @@ void MonitorWrites()
         rejects(request);
         engine.SetProperty(m.path, "MixInSource", Json::Parse("\"mon\""));
     }
+    // Live control has its own persistent command connection. Do not inherit
+    // the transactional safety phase's stopped/re-armed worker or reply queue.
+    MonitorController controller(observer, engine.port);
+    uint64_t expected = 0;
     for (const auto &operation :
          std::vector<std::pair<MonitorField, Json>>{{MonitorField::DimAmount, ControlNumber(34)},
                                                     {MonitorField::Source, Json::Parse("\"cue2\"")},
