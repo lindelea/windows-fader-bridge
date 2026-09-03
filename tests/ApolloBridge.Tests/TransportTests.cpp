@@ -795,9 +795,15 @@ void MonitorWrites()
         controller.Arm(m.key);
         engine.wrongReadback = true;
         const auto writes = engine.writes.load();
-        controller.Submit(m.key, operation.first, operation.second, controller.Epoch());
+        Check(controller.Submit(m.key, operation.first, operation.second, controller.Epoch()),
+              "New monitor field accepted for live dispatch");
         ++expected;
-        Until([&] { return controller.Status().confirmed == expected || !controller.Epoch(); }, 4000,
+        // The production request freshness deadline is five seconds. Allow the
+        // shared CI runner to reach that deadline so the test observes the
+        // controller's result instead of timing out while the request is still
+        // valid. A request that actually expires still cannot increment the
+        // confirmation count and therefore continues to fail this test.
+        Until([&] { return controller.Status().confirmed == expected || !controller.Epoch(); }, 6000,
               "New monitor field live dispatch");
         Check(engine.writes == writes + 1 && controller.Status().confirmed == expected &&
                   controller.Status().error.empty() && controller.Epoch(),
@@ -806,9 +812,10 @@ void MonitorWrites()
     }
     controller.Arm(m.key);
     engine.wrongReadback = true;
-    controller.Submit(m.key, MonitorField::Level, ControlNumber(-45), controller.Epoch());
+    Check(controller.Submit(m.key, MonitorField::Level, ControlNumber(-45), controller.Epoch()),
+          "Live monitor level accepted for dispatch");
     ++expected;
-    Until([&] { return controller.Status().confirmed == expected || !controller.Epoch(); }, 4000,
+    Until([&] { return controller.Status().confirmed == expected || !controller.Epoch(); }, 6000,
           "Live monitor level dispatch");
     Check(controller.Status().confirmed == expected && controller.Status().error.empty() && controller.Epoch(),
           "Monitor level remains live while observation owns final state");
