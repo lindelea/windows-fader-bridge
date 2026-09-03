@@ -1,6 +1,7 @@
 #include "WindowsCommandExecutor.h"
 
 #include "DiagnosticLog.h"
+#include "../BridgeGlobalShortcut.h"
 
 #include <Windows.h>
 #include <KnownFolders.h>
@@ -425,6 +426,13 @@ bool WindowsCommandExecutor::Execute(const WindowsCommand command)
     case WindowsCommand::MagnifierZoomOut: result = SendShortcut({ VK_LWIN }, VK_OEM_MINUS); break;
     case WindowsCommand::ToggleNarrator: result = SendShortcut({ VK_LWIN, VK_CONTROL }, VK_RETURN); break;
     case WindowsCommand::ToggleColorFilters: result = SendShortcut({ VK_LWIN, VK_CONTROL }, 'C'); break;
+
+    case WindowsCommand::FocusWindowsEucon:
+        result = bridge::RequestSummon(bridge::Application::WindowsEucon); break;
+    case WindowsCommand::FocusUadEucon:
+        result = bridge::RequestSummon(bridge::Application::UadEucon); break;
+    case WindowsCommand::FocusMackieControl:
+        result = bridge::RequestSummon(bridge::Application::MackieControl); break;
     }
     FB_TRACE("WINDOWS_COMMAND_EXECUTE command=%u result=%d",
         static_cast<unsigned>(command), result ? 1 : 0);

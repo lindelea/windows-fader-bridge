@@ -1,6 +1,28 @@
 #include "WinMidiPort.h"
 #include "DiagnosticLog.h"
 
+namespace
+{
+// Feedback is state, not an event stream. Replacing an unsent value prevents a
+// slow driver from building a stale motor/meter backlog while preserving the
+// latest state for every independent control.
+std::uint32_t FeedbackKey(const mackie::Bytes& bytes)
+{
+    if (bytes.empty() || bytes[0] == 0xF0) return UINT32_MAX;
+    const auto status = bytes[0];
+    if ((status & 0xF0) == 0xE0) return 0x10000U | status;
+    if ((status & 0xF0) == 0x90 && bytes.size() >= 2) return 0x20000U | (status << 8) | bytes[1];
+    if ((status & 0xF0) == 0xB0 && bytes.size() >= 2) return 0x30000U | (status << 8) | bytes[1];
+    if ((status & 0xF0) == 0xD0 && bytes.size() >= 2)
+    {
+        const auto channel = bytes[1] >> 4;
+        const auto level = bytes[1] & 0x0F;
+        return 0x40000U | (channel << 1) | (level >= 14 ? 1U : 0U);
+    }
+    return UINT32_MAX;
+}
+}
+
 std::vector<MidiPortName> WinMidiPort::Inputs(bool traceEnumeration)
 {
     std::vector<MidiPortName> ports;
@@ -34,17 +56,23 @@ bool WinMidiPort::Check(MMRESULT result, const wchar_t* operation)
     if (result == MMSYSERR_NOERROR) return true;
     wchar_t text[256]{};
     midiOutGetErrorTextW(result, text, 256);
-    error_ = std::wstring(operation) + L": " + text + L" (" + std::to_wstring(result) + L")";
+    { const std::scoped_lock lock(statusMutex_);
+      error_ = std::wstring(operation) + L": " + text + L" (" + std::to_wstring(result) + L")"; }
     ++Errors;
     FB_TRACE("MIDI_ERROR operation=%ls code=%u", operation, result);
     return false;
+}
+std::wstring WinMidiPort::Error() const
+{
+    const std::scoped_lock lock(statusMutex_);
+    return error_;
 }
 WinMidiPort::~WinMidiPort() { Close(); }
 bool WinMidiPort::Open(UINT input, UINT output)
 {
     Close();
-    faulted_ = false;
-    error_.clear();
+    faulted_.store(false, std::memory_order_release);
+    { const std::scoped_lock lock(statusMutex_); error_.clear(); }
     WNDCLASSW wc{};
     wc.lpfnWndProc = WindowProc;
     wc.hInstance = GetModuleHandleW(nullptr);
@@ -52,7 +80,7 @@ bool WinMidiPort::Open(UINT input, UINT output)
     RegisterClassW(&wc);
     window_ = CreateWindowExW(0, wc.lpszClassName, L"", 0, 0, 0, 0, 0,
         HWND_MESSAGE, nullptr, wc.hInstance, this);
-    if (!window_) { error_ = L"Cannot create MIDI message receiver"; return false; }
+    if (!window_) { const std::scoped_lock lock(statusMutex_); error_ = L"Cannot create MIDI message receiver"; return false; }
     if (!Check(midiOutOpen(&out_, output, 0, 0, CALLBACK_NULL), L"Open output")) { Close(); return false; }
     if (!Check(midiInOpen(&in_, input, reinterpret_cast<DWORD_PTR>(window_), 0,
         CALLBACK_WINDOW | MIDI_IO_STATUS), L"Open input")) { Close(); return false; }
@@ -66,12 +94,23 @@ bool WinMidiPort::Open(UINT input, UINT output)
         if (!Check(midiInAddBuffer(in_, &buffer->header, sizeof(MIDIHDR)), L"Queue input")) { Close(); return false; }
     }
     if (!Check(midiInStart(in_), L"Start input")) { Close(); return false; }
+    {
+        const std::scoped_lock lock(outputMutex_);
+        outputQueue_.clear();
+        outputRunning_ = true;
+    }
+    try { outputThread_ = std::thread(&WinMidiPort::OutputLoop, this); }
+    catch (...) { { const std::scoped_lock lock(outputMutex_); outputRunning_ = false; } Close(); return false; }
     FB_TRACE("MIDI_CONNECTED input=%u output=%u", input, output);
     return true;
 }
 void WinMidiPort::Collect()
 {
-    if (!out_) return;
+    // Output buffers belong exclusively to OutputLoop. Retained for the host's
+    // existing lifecycle call site; collection now happens off the input/UI thread.
+}
+void WinMidiPort::CollectOutput()
+{
     for (auto it = outputBuffers_.begin(); it != outputBuffers_.end();)
     {
         auto& header = (*it)->header;
@@ -83,43 +122,87 @@ void WinMidiPort::Collect()
 }
 void WinMidiPort::Send(const mackie::Bytes& bytes)
 {
-    if (!out_ || closing_ || faulted_ || bytes.empty()) return;
-    if (bytes[0] != 0xF0)
+    if (!out_ || closing_ || faulted_.load(std::memory_order_acquire) || bytes.empty()) return;
+    if (bytes[0] == 0xF0)
     {
-        if (bytes.size() < 2 || bytes.size() > 3) return;
-        DWORD packed = bytes[0] | (DWORD(bytes[1]) << 8);
-        if (bytes.size() > 2) packed |= DWORD(bytes[2]) << 16;
-        if (!mackie::ValidShort(packed)) return;
-        if (!Check(midiOutShortMsg(out_, packed), L"Send short")) { faulted_ = true; return; }
-        if (Trace) FB_TRACE("MIDI_TX short=%06lX", packed);
+        if (bytes.back() != 0xF7 || bytes.size() > 1024) return;
     }
     else
     {
-        Collect();
-        if (bytes.back() != 0xF7 || bytes.size() > 1024) return;
+        if (bytes.size() < 2 || bytes.size() > 3) return;
+        const DWORD packed = bytes[0] | (DWORD(bytes[1]) << 8) |
+            (bytes.size() > 2 ? DWORD(bytes[2]) << 16 : 0);
+        if (!mackie::ValidShort(packed)) return;
+    }
+    {
+        const std::scoped_lock lock(outputMutex_);
+        if (!outputRunning_) return;
+        const auto key = FeedbackKey(bytes);
+        if (key != UINT32_MAX)
+        {
+            const auto pending = std::find_if(outputQueue_.begin(), outputQueue_.end(),
+                [&](const auto& queued) { return FeedbackKey(queued) == key; });
+            if (pending != outputQueue_.end()) { *pending = bytes; outputWake_.notify_one(); return; }
+        }
+        if (outputQueue_.size() >= 512)
+        {
+            { const std::scoped_lock statusLock(statusMutex_); error_ = L"MIDI output queue stalled; reconnect to resync"; }
+            ++Errors; faulted_.store(true, std::memory_order_release); return;
+        }
+        outputQueue_.push_back(bytes);
+    }
+    outputWake_.notify_one();
+}
+void WinMidiPort::SendNow(const mackie::Bytes& bytes)
+{
+    if (bytes[0] != 0xF0)
+    {
+        DWORD packed = bytes[0] | (DWORD(bytes[1]) << 8);
+        if (bytes.size() > 2) packed |= DWORD(bytes[2]) << 16;
+        if (!Check(midiOutShortMsg(out_, packed), L"Send short")) { faulted_.store(true, std::memory_order_release); return; }
+        if (Trace.load(std::memory_order_relaxed)) FB_TRACE("MIDI_TX short=%06lX", packed);
+    }
+    else
+    {
+        CollectOutput();
         if (outputBuffers_.size() >= 64)
         {
-            error_ = L"MIDI output stalled; disconnect/reconnect to resync";
-            ++Errors; faulted_ = true; return;
+            { const std::scoped_lock lock(statusMutex_); error_ = L"MIDI output stalled; disconnect/reconnect to resync"; }
+            ++Errors; faulted_.store(true, std::memory_order_release); return;
         }
         auto buffer = std::make_unique<OutBuffer>();
         buffer->bytes.assign(bytes.begin(), bytes.end());
         buffer->header.lpData = buffer->bytes.data();
         buffer->header.dwBufferLength = static_cast<DWORD>(buffer->bytes.size());
-        if (!Check(midiOutPrepareHeader(out_, &buffer->header, sizeof(MIDIHDR)), L"Prepare output")) { faulted_ = true; return; }
+        if (!Check(midiOutPrepareHeader(out_, &buffer->header, sizeof(MIDIHDR)), L"Prepare output")) { faulted_.store(true, std::memory_order_release); return; }
         auto* header = &buffer->header;
         outputBuffers_.push_back(std::move(buffer));
         if (!Check(midiOutLongMsg(out_, header, sizeof(MIDIHDR)), L"Send SysEx"))
         {
             header->dwFlags |= MHDR_DONE;
-            faulted_ = true;
-            Collect();
+            faulted_.store(true, std::memory_order_release);
+            CollectOutput();
             return;
         }
-        if (Trace) FB_TRACE("MIDI_TX sysex_len=%zu command=%02X offset=%02X", bytes.size(),
+        if (Trace.load(std::memory_order_relaxed)) FB_TRACE("MIDI_TX sysex_len=%zu command=%02X offset=%02X", bytes.size(),
             bytes.size() > 5 ? bytes[5] : 0, bytes.size() > 6 ? bytes[6] : 0);
     }
     ++Sent;
+}
+void WinMidiPort::OutputLoop()
+{
+    for (;;)
+    {
+        mackie::Bytes bytes;
+        {
+            std::unique_lock lock(outputMutex_);
+            outputWake_.wait_for(lock, std::chrono::milliseconds(20), [&] { return !outputRunning_ || !outputQueue_.empty(); });
+            if (!outputRunning_) break;
+            if (!outputQueue_.empty()) { bytes = std::move(outputQueue_.front()); outputQueue_.pop_front(); }
+        }
+        if (!bytes.empty()) SendNow(bytes);
+        else CollectOutput();
+    }
 }
 void WinMidiPort::Close()
 {
@@ -137,6 +220,13 @@ void WinMidiPort::Close()
         in_ = nullptr;
     }
     for (auto& buffer : inputBuffers_) buffer.reset();
+    {
+        const std::scoped_lock lock(outputMutex_);
+        outputRunning_ = false;
+        outputQueue_.clear();
+    }
+    outputWake_.notify_all();
+    if (outputThread_.joinable()) outputThread_.join();
     if (out_)
     {
         // This WinMM buffer reset is not a device SysEx reset/firmware command.
@@ -174,7 +264,7 @@ LRESULT WinMidiPort::Message(UINT message, WPARAM handle, LPARAM value)
     if (message == MM_MIM_DATA || message == MM_MIM_MOREDATA)
     {
         ++Received;
-        if (Trace) FB_TRACE("MIDI_RX short=%06lX", static_cast<DWORD>(value));
+        if (Trace.load(std::memory_order_relaxed)) FB_TRACE("MIDI_RX short=%06lX", static_cast<DWORD>(value));
         receiver_(static_cast<DWORD>(value));
     }
     else if (message == MM_MIM_LONGDATA || message == MM_MIM_LONGERROR)
@@ -187,6 +277,6 @@ LRESULT WinMidiPort::Message(UINT message, WPARAM handle, LPARAM value)
         if (!Check(midiInAddBuffer(in_, header, sizeof(MIDIHDR)), L"Requeue input")) faulted_ = true;
     }
     else if (message == MM_MIM_ERROR) { ++Errors; FB_TRACE("MIDI_RX_ERROR short=%06lX", static_cast<DWORD>(value)); }
-    else if (message == MM_MIM_CLOSE) { faulted_ = true; ++Errors; error_ = L"MIDI input closed by driver"; }
+    else if (message == MM_MIM_CLOSE) { faulted_.store(true, std::memory_order_release); ++Errors; const std::scoped_lock lock(statusMutex_); error_ = L"MIDI input closed by driver"; }
     return 0;
 }

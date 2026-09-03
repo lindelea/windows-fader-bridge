@@ -181,8 +181,8 @@ The command processor now follows the complete documented three-level model:
 Key Commands -> category switch array -> one-shot command switch
 ```
 
-The existing `Windows Audio` persistence IDs remain unchanged. Thirteen additional
-categories publish 184 Windows commands, for 186 assignable commands in total.
+The existing `Windows Audio` persistence IDs remain unchanged. Fourteen additional
+categories publish 187 commands, for 189 assignable commands in total.
 Every category and command has an explicit globally unique, versioned
 persistence ID. These IDs are independent of display names and must never be
 renamed after release because EuControl stores them in user application sets.
@@ -198,6 +198,37 @@ shortcut.
 The catalog deliberately omits shutdown, reboot, sign-out, file deletion,
 formatting, service mutation, and other high-impact actions. See
 `WINDOWS_COMMANDS.md` for the category inventory and execution contract.
+
+## Foreground switching between bridge applications
+
+Concepts: application focus, command processor lifecycle, soft-key persistence,
+and callback threading. The implementation follows GettingStartedWithEuCon
+sections 3.5.4, 10.1, 10.5 and 11.5.5, the installed `EuProcessor`,
+`EuControlSwitchArray`, `EuControlSwitch` and `EuPrimitiveSwitch` declarations,
+then the EuConIO command example before EuConApp.
+
+EUCON still determines the controlled application from the actual topmost
+Windows application; there is no processor-side focus override. Each bridge
+therefore registers a distinct global shortcut and accepts a private summon
+message. Windows EUCON defaults to `Ctrl+Alt+Shift+W`, UAD EUCON to
+`Ctrl+Alt+Shift+U`, and Mackie Control to `Ctrl+Alt+Shift+M`. Users can record a
+replacement combination. `RegisterHotKey` is authoritative for conflicts; a
+failed replacement restores the previous registration and settings.
+
+The two EUCON adapters publish `Key Commands -> EUCON Applications` with three
+one-shot commands. Callbacks queue to the existing owner thread before sending
+the target message. They do not synthesize keyboard input, share an application
+model, launch a stopped process, or branch on the attached surface. The UAD
+command processor is created under the initial node freeze, registered before
+the node, kept for the adapter lifetime, then unregistered before node teardown.
+All processor, container and command persistence IDs are globally unique and
+versioned.
+
+The EUCON editions optionally hide 400 ms after being summoned, allowing
+EuControl's documented OS focus tracking to observe the real foreground change
+without leaving the bridge over the working application. Mackie Control remains
+foreground because it has no EUCON focus policy. Exact switching behavior and
+saved soft-key assignments require S3 and Avid Control verification.
 
 ## Application Solo and Clear Solo
 
@@ -344,12 +375,12 @@ regression-tested for this workflow.
 | Track identity and ordering | Verified | Channel Processors are keyed by stable application identity. Mutable atomic routes target the current Core Audio slot; reordering retains the Processor and changes only `ChannelOrder` and channel number as specified by guide section 12.4. Verified smooth and near-zero-latency on the attached S3/Avid Control setup. |
 | Default endpoint selection | Verified | Active render/capture endpoints retain stable Processor identity. Rec is a one-shot request, Windows default state owns its LED, and Console/Multimedia/Communications roles switch together. Capture selection and reverse synchronization were verified on Windows 11 with S3. |
 | Windows mono command | Verified on S3 | A standards-based assignable command queues the Windows setting handler and Windows state owns its LED. Clear Solo press/LED and real mono processing were verified; Mix to Mons is fixed and unavailable for assignment. Avid Control remains to be tested. |
-| Assignable Windows commands | Awaiting surface verification | The single documented Key Commands processor exposes 14 stable categories and 186 commands. EUCON callbacks post typed work to the Win32 owner thread. SDK initialization returned no errors; Settings URI, system executable, Known Folder, and general SendInput paths passed local tests. File Explorer, taskbar, input-language assignment and invocation, plus labels and momentary LEDs, remain to be verified on S3 and Avid Control. |
+| Assignable Windows commands | Awaiting surface verification | The single documented Key Commands processor exposes 15 stable categories and 189 commands. EUCON callbacks post typed work to the Win32 owner thread. SDK initialization returned no errors; Settings URI, system executable, Known Folder, application-summon and general SendInput paths passed local tests. File Explorer, taskbar, input-language assignment and invocation, plus labels and momentary LEDs, remain to be verified on S3 and Avid Control. |
 | Application Solo / Clear Solo | Verified | Application channels use standard Solo semantics; the Windows worker performs single-target intercancel muting and restores the pre-Solo mute snapshot. The standard System Clear Solo and an assignable command share authoritative state and LED feedback. Endpoint channels are excluded. |
 | Select / Attention | Verified on S3 | Standard channel Select drives one-of-N Windows application activation; off minimizes the selected application. Surface-owned AttentionedTrackPID is consumed on the UI thread. PID, package-family, and executable matching cover helper/worker processes without device-specific code. |
 | Application and output Pan / balance | Verified on S3 | Stereo application sessions use independent `IChannelAudioVolume` factors; stereo render endpoints use absolute `IAudioEndpointVolume` channel scalars capped by Master. Both expose the predefined Pan knob set and knob-top Center reset. Capture and non-stereo tracks are excluded. Avid Control remains to be tested. |
 | Application custom knob sets | Awaiting hardware verification | Custom pages 9/11/13 expose Media, Quick Controls, and Window operations. Media cells are generated from each GSMTC session's advertised read/write capabilities using the documented knob-array `Freeze` / `Remove` / `PushBack` / `Thaw` lifecycle. A readable but non-seekable timeline is retained as a read-only position cell; unsupported actions are absent. Metadata is fetched asynchronously and published as title/artist label cells. Session matching prefers the Windows current session and then active playback among identity-matched sessions; no unrelated global-session fallback is allowed. |
-| Desktop application shell | Locally verified | `WindowsFaderBridge.exe` is a per-monitor-DPI-aware, single-instance native tray application. The status window is optional UI around the process-lifetime EUCON node: close/hide does not destroy the adapter, while explicit tray Exit does. Per-user startup uses the standard HKCU Run value with `--background`; no service, elevation, driver, or scheduled task is introduced. |
+| Desktop application shell | Locally verified | `WindowsFaderBridge.exe` is a per-monitor-DPI-aware, single-instance native tray application. Its Overview, General and About shell shares the Mackie edition's desktop information architecture and neutral component tokens while retaining the EUCON purple accent and omitting MIDI-only settings. Simplified Chinese and English cover the complete shell, tray, dialogs, and shortcut recorder; the selected language is persisted per user. The status window is optional UI around the process-lifetime EUCON node: close/hide does not destroy the adapter, while explicit tray Exit does. Per-user startup uses the standard HKCU Run value with `--background`; no service, elevation, driver, or scheduled task is introduced. |
 | Volume knob semantics | Needs work | Volume currently borrows the predefined Input knob-set layout. Confirm the correct standard model or use an official knob-map strategy. |
 | Meter API 3.1 | Verified | Windows supplies true per-leg peaks and endpoint channel roles. Tracks declare dynamic stereo/mono formats, save `VisibilityChangedV2` handles, and use `EuBatchedMeterWriter`; observed batched calls returned success. The ordinary write is isolated to startup/no-handle compatibility. |
 | Device-derived behavior | Needs review | Forced refresh and overtravel rebound came from hardware testing. Classify them as generic application policy or remove them after cross-surface tests. |

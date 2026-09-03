@@ -1,0 +1,19 @@
+name: Apollo core (no vendor SDK)
+on:
+  push:
+    branches: [main, 'codex/apollo-*']
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  native:
+    runs-on: windows-2022
+    timeout-minutes: 10
+    strategy:
+      matrix:
+        configuration: [Release, Debug]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test model and isolated loopback transport
+        shell: pwsh
+        run: ./scripts/build-apollo.ps1 -CoreOnly -TransportTests -Configuration ${{ matrix.configuration }}

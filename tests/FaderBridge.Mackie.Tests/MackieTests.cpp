@@ -80,14 +80,14 @@ void MultipleDevices()
     Check(legacy.autoConnect&&legacy.Save(root/L"settings.txt"),"legacy settings default to automatic mode");
     auto workspace=MackieWorkspace::Load(root);
     Check(workspace.devices==std::vector<std::string>{"primary"}&&workspace.language==L"en","single-device configuration migrates without losing preferences");
-    workspace.devices.push_back("device-second");workspace.selected="device-second";workspace.language=L"zh";
+    workspace.devices.push_back("device-second");workspace.selected="device-second";workspace.language=L"zh";workspace.shortcutModifiers=5;workspace.shortcutKey=VK_F9;
     Check(workspace.Save(),"atomic multi-device registry save");
     auto second=MackieSettings::Load(workspace.DevicePath("device-second"));second.deviceName=L"副控台";second.autoConnect=false;second.bindings[15*128]=L"OpenSettings";
     Check(second.Save(),"device settings default save uses their own loaded path");
     auto primary=MackieSettings::Load(root/L"settings.txt");auto restored=MackieSettings::Load(workspace.DevicePath("device-second"));
     Check(primary.bindings==legacy.bindings&&primary.bindings.size()==80&&restored.bindings!=primary.bindings,"editing a second device cannot overwrite primary mappings");
     Check(restored.deviceName==L"副控台"&&!restored.autoConnect&&restored.storage==workspace.DevicePath("device-second"),"device identity automatic mode and storage roundtrip");
-    auto loaded=MackieWorkspace::Load(root);Check(loaded.devices==workspace.devices&&loaded.selected=="device-second"&&loaded.language==L"zh","multi-device selection persists");
+    auto loaded=MackieWorkspace::Load(root);Check(loaded.devices==workspace.devices&&loaded.selected=="device-second"&&loaded.language==L"zh"&&loaded.shortcutModifiers==5&&loaded.shortcutKey==VK_F9,"multi-device selection and global shortcut persist");
     Check(loaded.DevicePath("../../outside").empty()&&!MackieWorkspace::ValidId("C:\\file")&&!MackieWorkspace::ValidId(".."),"manifest cannot escape settings directory");
     loaded.devices.clear();loaded.selected.clear();Check(loaded.Save()&&MackieWorkspace::Load(root).devices.empty(),"removing all devices does not remigrate old primary configuration");
     Check(std::filesystem::exists(root/L"settings.txt")&&std::filesystem::exists(workspace.DevicePath("device-second")),"removed device files remain recoverable");
@@ -482,7 +482,8 @@ void Feedback()
 {
     Harness h; h.surface.Feedback(1000, true); h.output.clear(); h.surface.Feedback(1001);
     Check(h.output.empty(), "unchanged feedback is silent before meter refresh");
-    h.surface.Feedback(1050); Check(h.output.size() == 8, "meter packets refresh on schedule");
+    h.surface.Feedback(1029); Check(h.output.empty(), "meter packets wait for the next audio-frame interval");
+    h.surface.Feedback(1030); Check(h.output.size() == 8, "meter packets refresh at audio-frame cadence");
     auto t = Make(); t.volume = .7F; t.muted = true; t.solo = true; t.peakDb = 0;
     h.surface.Update({t}, 1100); h.surface.AnySolo = true; h.output.clear(); h.surface.Feedback(1100);
     Check(h.Has(Fader(0, .7F)) && h.Has(Led(16, true)) && h.Has(Led(8, true)), "Windows changes return to motor and LEDs");

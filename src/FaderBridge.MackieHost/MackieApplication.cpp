@@ -159,6 +159,10 @@ int MackieApplication::Run(HINSTANCE instance, int show)
         CW_USEDEFAULT, CW_USEDEFAULT, bounds.right - bounds.left, bounds.bottom - bounds.top,
         nullptr, nullptr, instance, this);
     if (!window_) return 2;
+    if (!smoke_ && !globalShortcut_.Apply(window_, 1, true,
+        {workspace_.shortcutModifiers, workspace_.shortcutKey}))
+        FB_TRACE("MACKIE_GLOBAL_SHORTCUT_UNAVAILABLE modifiers=%u key=%u",
+                 workspace_.shortcutModifiers, workspace_.shortcutKey);
     FB_TRACE("MACKIE_STARTUP phase=window_created");
     BOOL dark = TRUE; DwmSetWindowAttribute(window_, 20, &dark, sizeof(dark));
     CreateControls();
@@ -488,6 +492,8 @@ void MackieApplication::OnFrame(std::unique_ptr<AudioFrame> frame)
         Surface().Update(tracks,GetTickCount64());Surface().AnySolo=frame_->anySolo;
         if(Settings().trackOrder!=Surface().Order()){Settings().trackOrder=Surface().Order();DirtySettings()=true;}
     }
+    // Meter paint is asynchronous and contains no list/model reconciliation.
+    if (desktop_) desktop_->AudioFrameChanged();
 }
 void MackieApplication::Tick()
 {
@@ -495,8 +501,8 @@ void MackieApplication::Tick()
     if (smoke_ && now - started_ >= 6000)
     {
         const auto active = frame_ ? std::count_if(frame_->strips.begin(), frame_->strips.end(), [](const auto& s) { return s.active; }) : 0;
-        const auto sent = std::accumulate(devices_.begin(),devices_.end(),emptyDevice_->midi.Sent,
-            [](std::uint64_t total,const auto& device){return total+device->midi.Sent;});
+        const auto sent = std::accumulate(devices_.begin(),devices_.end(),emptyDevice_->midi.Sent.load(),
+            [](std::uint64_t total,const auto& device){return total+device->midi.Sent.load();});
         const bool disconnected = !emptyDevice_->midi.Connected() && std::none_of(devices_.begin(),devices_.end(),
             [](const auto& device){return device->midi.Connected();});
         const bool okay = audio_ && audio_->IsReady() && active > 0 && disconnected && sent == 0;
@@ -616,7 +622,7 @@ void MackieApplication::Render()
     SetDlgItemTextW(window_, JogStatus, Surface().CursorZoom() ?
         L"Jog：独立分配 · 方向层：Zoom" : L"Jog：独立分配 · 方向层：Move");
     auto state = (Midi().Connected() ? L"● 已连接   " : L"○ MIDI 未连接   ") + status_;
-    state += L"\nRX " + std::to_wstring(Midi().Received) + L"  TX " + std::to_wstring(Midi().Sent) + L"  Errors " + std::to_wstring(Midi().Errors);
+    state += L"\nRX " + std::to_wstring(Midi().Received.load()) + L"  TX " + std::to_wstring(Midi().Sent.load()) + L"  Errors " + std::to_wstring(Midi().Errors.load());
     if (frame_) state += frame_->monoAudioEnabled ? L"  ·  MONO" : L"  ·  STEREO";
     SetDlgItemTextW(window_, State, state.c_str());
     renderGuard_ = false;
@@ -900,10 +906,19 @@ LRESULT CALLBACK MackieApplication::WindowProc(HWND window, UINT message, WPARAM
 }
 LRESULT MackieApplication::Message(UINT message, WPARAM w, LPARAM l)
 {
+    if (message == bridge::SummonMessage())
+    {
+        if (desktop_) desktop_->Show();
+        else { ShowWindow(window_, SW_RESTORE); SetForegroundWindow(window_); }
+        return 0;
+    }
     switch (message)
     {
     case AudioMessage: OnFrame(std::unique_ptr<AudioFrame>(reinterpret_cast<AudioFrame*>(l))); return 0;
     case WM_TIMER: Tick(); return 0;
+    case WM_HOTKEY:
+        if (w == 1) { if (desktop_) desktop_->Show(); else { ShowWindow(window_, SW_RESTORE); SetForegroundWindow(window_); } return 0; }
+        break;
     case WM_COMMAND: Command(LOWORD(w), HIWORD(w)); return 0;
     case CommandResult: if (!w) Status(L"Windows 命令执行失败；请查看日志或目标窗口的权限。"); return 0;
     case WM_NOTIFY:

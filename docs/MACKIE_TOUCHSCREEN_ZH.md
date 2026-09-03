@@ -1,7 +1,7 @@
 # Windows 80 键触屏预设 — 中文说明
 
-这是桥接程序的通用 MIDI 命令预设，不是新的 Mackie 协议，也不是设备驱动。
-P1-Nano 由 iMAP 管理屏幕；其他设备可发送同样的 MIDI Note，使用同一组命令。
+这是桥接程序为 P1-Nano 准备的 MIDI 命令预设，不是新的 Mackie 协议，也不是
+设备驱动。P1-Nano 由 iMAP 管理屏幕；其他设备通过桥接程序的学习功能自定义。
 
 ## 本次设备安排
 
@@ -15,7 +15,7 @@ P1-Nano 由 iMAP 管理屏幕；其他设备可发送同样的 MIDI Note，使�
 
 1. 在 iMAP 导出并保留自己的原始完整配置。
 2. 底部 **LOAD FILE** 加载生成的 `Windows80-DAW2.imap`，再选择顶部第二个 DAW 槽位。
-3. 在桥接程序断开 MIDI，点击 **一键应用 Windows 80 键预设**。旧配置会另存备份；已有冲突分配不会被覆盖。
+3. 在桥接程序“设备”页选择 P1-Nano 配置并断开 MIDI，点击 **一键应用 Windows 80 键预设**。旧配置会另存备份；已有冲突分配不会被覆盖。
 4. 输入选 `MIDIIN2 (iCON P1-Nano)`，输出选 `MIDIOUT2 (iCON P1-Nano)`，选择 P1-Nano 配置并保留触摸保护，连接设备。
 5. 验证屏幕和按键后，在 iMAP 点 **SAVE AS USER DEFAULT**，让当前设置下次继续使用。
 

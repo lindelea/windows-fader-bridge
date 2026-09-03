@@ -1,5 +1,6 @@
 #include "MackieApplication.h"
 #include "DiagnosticLog.h"
+#include "../BridgeGlobalShortcut.h"
 #include <string_view>
 #include <clocale>
 #pragma comment(linker, "/manifestdependency:\"type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
@@ -13,8 +14,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR arguments, int show)
     if (!mutex) return 2;
     if (GetLastError() == ERROR_ALREADY_EXISTS)
     {
-        if (const auto window = FindWindowW(L"WindowsFaderBridge.Mackie.Main", nullptr))
-        { PostMessageW(window, WM_APP + 13, 0, 0); }
+        bridge::RequestSummon(bridge::Application::MackieControl);
         CloseHandle(mutex); return 0;
     }
     const auto com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);

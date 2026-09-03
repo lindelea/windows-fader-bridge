@@ -22,7 +22,7 @@ void MackieApplication::SyncDeviceControls()
     };
     fill(101,inputs_,Settings().input);fill(102,outputs_,Settings().output);
     SendDlgItemMessageW(window_,103,CB_SETCURSEL,Settings().profile==L"p1-nano"?1:0,0);
-    for(auto pair:{std::pair<int,bool>{106,Settings().touch},{107,Settings().lcd},{108,Settings().meters},{109,Midi().Trace}})
+    for(auto pair:{std::pair<int,bool>{106,Settings().touch},{107,Settings().lcd},{108,Settings().meters},{109,Midi().Trace.load()}})
         SendDlgItemMessageW(window_,pair.first,BM_SETCHECK,pair.second?BST_CHECKED:BST_UNCHECKED,0);
     for(int id:{101,102,103,104,106,107,108})EnableWindow(GetDlgItem(window_,id),!Midi().Connected());
     SetDlgItemTextW(window_,105,Midi().Connected()?L"断开设备":L"连接设备");

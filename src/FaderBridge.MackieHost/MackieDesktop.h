@@ -20,6 +20,7 @@ public:
     void Close();
     HWND Window() const { return window_; }
     void Tick();
+    void AudioFrameChanged();
     bool Midi(DWORD raw);
     bool Preview(const mackie::Action& action);
     bool Editing() const;
@@ -58,12 +59,16 @@ private:
     void Text(HDC, const std::wstring&, int x, int y, int width, int height, COLORREF, int font = 0, UINT flags = 0);
     void Panel(HDC, int x, int y, int w, int h, COLORREF fill, COLORREF line);
     int S(int value) const;
+    int OverviewRowsPerPage() const;
+    int OverviewRowHeight() const;
     MackieApplication& app_;
     HWND window_ = nullptr;
     HFONT fonts_[5]{};
     HFONT iconFont_ = nullptr;
+    HICON headerIcon_ = nullptr, aboutIcon_ = nullptr;
     HBRUSH background_ = nullptr, field_ = nullptr;
     int dpi_ = 96, width_ = 1180, height_ = 740, page_ = 0;
+    int overviewRowHeight_ = 0;
     bool zh_ = true, building_ = false, listGuard_ = false, capture_ = false;
     bool noticeError_ = false;
     std::uint64_t noticeUntil_ = 0;

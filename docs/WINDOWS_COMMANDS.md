@@ -13,8 +13,8 @@ Key Commands
      -> command
 ```
 
-The catalog contains 186 commands in 14 categories. The original two Windows
-Audio commands retain their existing persistence IDs; the 184 new commands use
+The catalog contains 189 commands in 15 categories. The original two Windows
+Audio commands retain their existing persistence IDs; the remaining commands use
 globally unique IDs under `FaderBridge.Windows.Commands.*.v1`.
 
 ## Categories
@@ -128,6 +128,16 @@ Next Input Language; Previous Input Language; Previous Input Method.
 
 On-Screen Keyboard; Open Magnifier; Close Magnifier; Magnifier Zoom In;
 Magnifier Zoom Out; Toggle Narrator; Toggle Color Filters.
+
+### EUCON Applications
+
+Windows EUCON; UAD EUCON; Mackie Control.
+
+These commands summon an already-running bridge through a private Windows
+message. They do not synthesize the configured keyboard shortcut and do not
+launch a stopped application. The target bridge owns its foreground/background
+policy. This keeps the command useful when the user records a different global
+shortcut later.
 
 ## Threading and execution
 
