@@ -803,8 +803,22 @@ void MonitorWrites()
         // controller's result instead of timing out while the request is still
         // valid. A request that actually expires still cannot increment the
         // confirmation count and therefore continues to fail this test.
-        Until([&] { return controller.Status().confirmed == expected || !controller.Epoch(); }, 6000,
-              "New monitor field live dispatch");
+        const auto dispatchDeadline = Clock::now() + std::chrono::milliseconds(6000);
+        for (;;)
+        {
+            const auto status = controller.Status();
+            if (status.confirmed == expected || !controller.Epoch())
+                break;
+            if (Clock::now() >= dispatchDeadline)
+                throw std::runtime_error(
+                    "New monitor field live dispatch: expected=" + std::to_string(expected) +
+                    " confirmed=" + std::to_string(status.confirmed) +
+                    " epoch=" + std::to_string(status.epoch) +
+                    " pending=" + std::to_string(status.pending) +
+                    " writes=" + std::to_string(engine.writes.load()) +
+                    " error=" + status.error + " last=" + status.lastOperation);
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
         Check(engine.writes == writes + 1 && controller.Status().confirmed == expected &&
                   controller.Status().error.empty() && controller.Epoch(),
               "Ordinary monitor controls use one live set without transactional readback");
