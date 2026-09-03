@@ -6,7 +6,9 @@ Current application version: **v1.0.0**.
 
 A control bridge between UAD Console and EUCON. Apollo and Console continue to
 process audio; the bridge does not replace Console or manage EUCON hardware.
-This build requires hardware acceptance testing before production use.
+Hardware compatibility follows validation with the actual Apollo, S3 and Avid
+Control environment. When first using configuration, routing, plug-in loading,
+phantom power or talkback, confirm the device response outside a critical session.
 
 ## Overview
 
@@ -83,8 +85,8 @@ the adjacent `logs` folder. Earlier Apollo Bridge logs are retained in their old
 location. Settings use strict versioned JSON and atomic replacement. Invalid
 settings fall back to read-only defaults without overwriting the original.
 
-Build: `scripts/build-apollo.ps1 -TransportTests -NativeOutputName uad-console-bridge-channels`.
-Executable: `artifacts/uad-console-bridge-channels/Release/ApolloBridge.Eucon.exe`.
+Build: `scripts/build-apollo.ps1 -TransportTests`.
+Executable: `artifacts/apollo-eucon/Release/ApolloBridge.Eucon.exe`.
 The internal executable name and EUCON persistence ID are retained for continuity;
 the public product name, application icon and file properties use the new name.
 

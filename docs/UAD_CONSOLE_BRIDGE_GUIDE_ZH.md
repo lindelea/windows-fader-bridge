@@ -7,8 +7,8 @@
 UAD Console 与 EUCON 之间的控制桥接程序。音频处理仍由 Apollo 与 UAD Console 完成。
 本程序不替代 Console，不接管 EUCON 硬件发现、分配或翻页。
 
-当前为待验收构建。软件与模拟测试不能替代 S3、Avid Control 和实际 Apollo 工作流程验收。
-不要在重要录音中首次测试配置、路由、插件加载或敏感操作。
+硬件兼容性以实际 Apollo、S3 与 Avid Control 的验证结果为准。首次使用配置、路由、
+插件加载或 48V、TALK 等功能时，请先在非关键录音环境中确认设备响应。
 
 ## 主界面
 
@@ -86,7 +86,7 @@ EUCON 使用独立的应用与持久标识，可以与本程序同时运行。�
 从源代码构建还需要 Visual Studio C++ v143、Windows SDK 和单独取得的 Avid EUCON SDK。
 仓库不包含厂商 SDK、手册、示例、安装包或库文件。
 
-本轮隔离构建：`artifacts/uad-console-bridge-channels/Release/ApolloBridge.Eucon.exe`。
+默认构建输出：`artifacts/apollo-eucon/Release/ApolloBridge.Eucon.exe`。
 可执行文件暂保留内部工程名称，窗口、图标、文件属性与 EUCON 显示名称使用新产品名。
 EUCON 持久标识保持不变，以保留既有布局。
 
@@ -110,9 +110,9 @@ EUCON 持久标识保持不变，以保留既有布局。
 & .\artifacts\uad-console-bridge-channels\Release\ApolloBridge.Eucon.exe --diagnostics --experimental-config
 ```
 
-首次实机验收：先只读核对 S3 与 Avid Control 的名称、通道、翻页、控制室和反馈；
-再在低监听音量、安全测试通道上逐项开放权限。确认完整控制、上限、暂停、托盘恢复与退出的行为。
-真实的 48V、TALK、插件加载和路由修改仅由操作者在确认安全后测试。
+首次连接新硬件或更新 UAD / EUCON 环境后，应核对 S3 与 Avid Control 的名称、通道、
+翻页、控制室和反馈，再在低监听音量的测试通道上确认控制范围、音量上限、暂停、
+托盘恢复与退出。48V、TALK、插件加载和路由修改由操作者在合适的录音环境中验证。
 
 详细控制映射见 [底层功能与旧调试界面说明](APOLLO_GUIDE_ZH.md)，
-CONFIG 范围见 [实验记录](APOLLO_CONFIG_EXPERIMENT.md)。
+CONFIG 的设计与验证历史见 [实现记录](APOLLO_CONFIG_EXPERIMENT.md)。

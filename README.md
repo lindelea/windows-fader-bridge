@@ -1,58 +1,58 @@
-# Windows Fader Bridge
+# Windows Fader Bridge and UAD Console Bridge
 
 Current application version: **v1.0.0**. This version is shared by Windows
 Fader Bridge for EUCON, Windows Fader Bridge for Mackie Control, and UAD Console
 Bridge for EUCON. Protocol, settings-schema, SDK and dependency versions remain
 independent.
 
-Native Windows audio control from your control surface: application volume,
-pan, mute, solo, meters and everyday Windows commands.
+Control bridges for Windows Core Audio and the UAD Console mixer, with separate
+EUCON and Mackie Control applications.
 
-Two independent applications share the project:
+Three independent applications share the project:
 
-| Edition | Connection | Validation hardware |
+| Application | Connection | Validation hardware |
 | --- | --- | --- |
 | **Windows Fader Bridge for EUCON** | Avid EUCON runtime / EuControl | Avid S3 and Avid Control on iPad |
 | **Windows Fader Bridge for Mackie Control** | Standard Mackie Control (MCU) over MIDI | iCON P1-Nano in Cubase/MCU mode |
+| **UAD Console Bridge for EUCON** | UAD Console / UA Mixer Engine and Avid EUCON runtime | Apollo, Avid S3 and Avid Control on iPad |
 
-These are protocol adapters, not device-specific drivers. Each edition has its
-own executable, settings and lifecycle. P1-Nano is the first Mackie test device,
-not a requirement; other MCU controllers use the same protocol implementation.
+Each application has its own executable, settings, identity and lifecycle. The
+two Windows editions control Windows Core Audio through different surface
+protocols. UAD Console Bridge controls the Apollo DSP mixer through EUCON.
+They can be installed together without sharing control state. P1-Nano is the
+first Mackie validation device, not a requirement; other MCU controllers use
+the same protocol implementation.
 
-## UAD Console Bridge for EUCON — development preview
+## UAD Console Bridge for EUCON
 
-A separate **UAD Console Bridge for EUCON** is being developed for the Apollo DSP
-mixer. The current checkpoint observes UA Mixer Engine state and contains a
-standard EUCON feedback adapter with independently armed, multi-channel fader,
-mute, solo and independent left/right pan control. The development build also
-maps AUX/Cue sends to AUX, output destinations to MIX, supported native preamp
-controls to Input, and loaded plug-in parameters to Inserts child pages.
-Input also offers channel-type-specific line reference/SRC, AUX PRE/POST/MONO,
-and TALK/TB-to-monitor controls. Empty insert slots show None. Channel colors
-distinguish input families. By explicit user choice, the channel Rec button/LED
-selects UAD REC/MON (effects printed vs dry DAW feed), not DAW record arming.
-Startup is read only by default; restoring confirmed permissions at startup is
-an explicit opt-in. Reconnection never automatically restores write access.
-A separate standard EUCON control-room
-processor provides monitor level, Mute, Dim, Mono, dim depth, source selection
-and TALK behind its own explicit unlock and session level ceiling. The monitor
-is never a channel-strip fader. Phantom activation and talkback to monitor
-require the separate sensitive-control permission.
-Loaded UNISON plug-ins have a separate, metadata-driven parameter area in the
-upper Channel Control hierarchy; raw UNISON gain curves are still never guessed.
-Confirmed self-authored routing refreshes
-the same channel's permission without disrupting other channels.
-**New channel/monitor features await S3 and Avid Control acceptance; this is not
-a production Apollo controller.**
-The new English / Simplified Chinese desktop presents status only. Settings
-contain independent permission scopes, a configurable monitor ceiling (up to
-0 dB), tray behavior and optional Windows sign-in startup. CONFIG features remain
-experimental and opt-in. The previous dashboard is private (`--diagnostics`).
-The existing Windows Fader Bridge editions remain independent and unchanged.
+**UAD Console Bridge for EUCON** is a standalone bidirectional control bridge for
+the Apollo DSP mixer. It publishes UAD Console channels and the control room as
+a dedicated EUCON application while Apollo and UAD Console continue to process
+audio.
+
+- Live fader, mute, solo and mono/stereo pan control with native signal and peak
+  feedback.
+- Input, AUX/Cue, MIX/output, Inserts and UNISON pages with engineering-unit
+  parameter values, paging and concise surface labels.
+- Plug-in category browsing, load/unload with `NONE`, bypass, existing preset
+  selection and CONFIG workflows.
+- A separate control-room model for monitor level, MUTE, DIM, MONO, source,
+  dim depth and TALK; the monitor is not presented as a channel-strip fader.
+- A status-only English / Simplified Chinese desktop interface with channel
+  overview, system-tray operation, Windows sign-in startup and a configurable
+  global activation shortcut.
+- Settings for control scope and a bridge monitor-level ceiling adjustable up
+  to 0 dB. Continuous audio controls dispatch immediately and coalesce only
+  unsent intermediate positions; topology-changing CONFIG operations use
+  confirmed transactions.
+
+Windows Fader Bridge for EUCON and UAD Console Bridge for EUCON use separate
+EUCON application and persistence identities, so EuControl can keep both in its
+application list and switch focus between them.
 
 See the [Chinese user guide](docs/UAD_CONSOLE_BRIDGE_GUIDE_ZH.md),
 [English user guide](docs/UAD_CONSOLE_BRIDGE_GUIDE_EN.md),
-[control mapping / legacy diagnostics](docs/APOLLO_GUIDE_ZH.md) and
+[control mapping and implementation history](docs/APOLLO_GUIDE_ZH.md) and
 [research / verification record](docs/APOLLO_RESEARCH.md). SDK-free tests can be
 run with `scripts/build-apollo.ps1 -CoreOnly`; the EUCON host requires a
 separately obtained Avid SDK. No vendor SDK, manual or example is redistributed.
@@ -239,10 +239,11 @@ Git.
 
 ## Repository status
 
-This is an active hardware-research project, not a finished release. The public
-source tree contains only Windows Fader Bridge project material. Proprietary
-Avid SDK content and privately collected research material are deliberately
-excluded.
+This repository contains the three independent v1.0.0 applications listed
+above. Development and hardware compatibility validation continue without
+changing their separate executable, settings and protocol boundaries.
+Proprietary Avid SDK content and privately collected research material are
+deliberately excluded.
 
 The generic integration contract is recorded in `docs/EUCON_ARCHITECTURE.md`;
 the assignable command catalog is documented in `docs/WINDOWS_COMMANDS.md`, and
