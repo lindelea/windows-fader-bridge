@@ -52,6 +52,9 @@ enum Id
     ConfigAccess,
     RestoreAccess,
     Ceiling,
+    FocusShortcut,
+    FocusShortcutRecord,
+    FocusReturnToBackground,
     ChannelList = 270
 };
 std::wstring W(const std::string &s)
@@ -273,6 +276,13 @@ void ApolloDesktop::Build()
                draft_.background);
         Toggle(Minimized, T(L"启动时隐藏主窗口", L"Start with the window hidden"), draft_.startMinimized);
         Toggle(Startup, T(L"登录 Windows 时启动", L"Launch at Windows sign-in"), draftStartup_);
+        Toggle(FocusShortcut, T(L"启用全局调出快捷键", L"Enable global summon shortcut"),
+               draft_.focusShortcutEnabled);
+        Button(FocusShortcutRecord, bridge::ShortcutText(
+            {draft_.focusShortcutModifiers, draft_.focusShortcutKey}));
+        Toggle(FocusReturnToBackground,
+               T(L"识别后返回后台", L"Return to background after detection"),
+               draft_.focusReturnToBackground);
         Button(OpenLogs, T(L"打开日志文件夹", L"Open log folder"));
     }
     if (page_ == 2)
@@ -345,7 +355,10 @@ void ApolloDesktop::Layout()
         Place(Background, right - 74, 274, 50, 28);
         Place(Minimized, right - 74, 346, 50, 28);
         Place(Startup, right - 74, 418, 50, 28);
-        Place(OpenLogs, 278, 522, 200, 38);
+        Place(FocusShortcut, right - 74, 514, 50, 28);
+        Place(FocusShortcutRecord, right - 254, 552, 230, 38);
+        Place(FocusReturnToBackground, right - 74, 606, 50, 28);
+        Place(OpenLogs, 278, 700, 200, 34);
     }
     if (page_ == 2)
     {
@@ -376,8 +389,7 @@ void ApolloDesktop::Show(bool settings)
 {
     if (settings && !page_)
         Navigate(1);
-    ShowWindow(window_, IsIconic(window_) ? SW_RESTORE : SW_SHOW);
-    SetForegroundWindow(window_);
+    bridge::ActivateTopLevelWindow(window_);
 }
 void ApolloDesktop::Hide()
 {
@@ -554,6 +566,8 @@ void ApolloDesktop::SyncDraft()
         draft_.background = Checked(window_, Background);
         draft_.startMinimized = Checked(window_, Minimized);
         draftStartup_ = Checked(window_, Startup);
+        draft_.focusShortcutEnabled = Checked(window_, FocusShortcut);
+        draft_.focusReturnToBackground = Checked(window_, FocusReturnToBackground);
     }
     if (page_ == 2)
     {
@@ -650,6 +664,18 @@ void ApolloDesktop::Act(int id, int code)
     case OpenLogs:
         OpenFolder();
         break;
+    case FocusShortcutRecord: {
+        bridge::Shortcut next{draft_.focusShortcutModifiers, draft_.focusShortcutKey};
+        if (bridge::CaptureShortcut(window_, next, next, draft_.language == "zh-CN"))
+        {
+            draft_.focusShortcutModifiers = next.modifiers;
+            draft_.focusShortcutKey = next.key;
+            dirty_ = true;
+            Build();
+            SetFocus(GetDlgItem(window_, FocusShortcutRecord));
+        }
+        break;
+    }
     case Connect:
         if (!state_.preview)
             actions_.connect();
@@ -884,7 +910,16 @@ void ApolloDesktop::Paint(HDC dc)
                 L"Start directly in the system tray.");
             row(412, L"登录 Windows 时启动", L"Launch at Windows sign-in", L"仅为当前 Windows 用户设置。",
                 L"Applies to the current Windows user only.");
-            Panel(dc, x, 500, cardWidth, 83, Surface, Edge);
+            Panel(dc, x, 500, cardWidth, 194, Surface, Edge);
+            row(510, L"启用全局调出快捷键", L"Enable global summon shortcut", L"", L"");
+            Text(dc, T(L"快捷键", L"Shortcut"), x + 24, 558, 160, 28, 0, Ink);
+            row(600, L"识别后返回后台", L"Return to background after detection", L"", L"");
+            Text(dc,
+                 T(L"用于同时运行多个 EUCON 应用。快捷键会短暂调出本应用，便于 EuControl 识别并跟随；"
+                   L"启用后会在识别完成后隐藏窗口。",
+                   L"For workflows with multiple EUCON applications. The shortcut briefly summons this app "
+                   L"so EuControl can follow it, then hides the window after detection when enabled."),
+                 x + 24, 649, cardWidth - 48, 44, 1, Secondary, DT_WORDBREAK);
         }
         if (page_ == 2)
         {
@@ -985,8 +1020,8 @@ void ApolloDesktop::DrawItem(DRAWITEMSTRUCT *d)
                           : selected || hot ? Edge
                           : nav             ? Bg
                                             : Surface;
-    const bool inCard = d->CtlID == OpenLogs || d->CtlID == Connect || d->CtlID == Disconnect ||
-                        d->CtlID == LockAll;
+    const bool inCard = d->CtlID == OpenLogs || d->CtlID == FocusShortcutRecord ||
+                        d->CtlID == Connect || d->CtlID == Disconnect || d->CtlID == LockAll;
     auto background = CreateSolidBrush(inCard ? Surface : Bg);
     FillRect(d->hDC, &d->rcItem, background);
     DeleteObject(background);
@@ -1281,7 +1316,7 @@ LRESULT ApolloDesktop::Message(UINT message, WPARAM w, LPARAM l)
         return 0;
     }
     case WM_GETMINMAXINFO: {
-        RECT r{0, 0, S(1020), S(710)};
+        RECT r{0, 0, S(1020), S(820)};
         AdjustWindowRectExForDpi(&r, WS_OVERLAPPEDWINDOW, FALSE, 0, dpi_);
         reinterpret_cast<MINMAXINFO *>(l)->ptMinTrackSize = {r.right - r.left, r.bottom - r.top};
         return 0;

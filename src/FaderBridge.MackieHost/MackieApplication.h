@@ -6,6 +6,7 @@
 #include "MackieDisplayClock.h"
 #include "MackieWorkspace.h"
 #include "MackieConnectionPolicy.h"
+#include "../BridgeGlobalShortcut.h"
 #include "NativeAudioController.h"
 #include "WindowsCommand.h"
 #include <CommCtrl.h>
@@ -76,6 +77,7 @@ private:
     void SyncDeviceControls();
     void TickDevice(std::uint64_t now);
     std::unique_ptr<MackieDesktop> desktop_;
+    bridge::GlobalShortcutRegistration globalShortcut_;
     static LRESULT CALLBACK WindowProc(HWND, UINT, WPARAM, LPARAM);
     static LRESULT CALLBACK EncoderWindowProc(HWND, UINT, WPARAM, LPARAM);
     static LRESULT CALLBACK JogWindowProc(HWND, UINT, WPARAM, LPARAM);

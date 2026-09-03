@@ -1,5 +1,6 @@
 #include "ApplicationShell.h"
 #include "DiagnosticLog.h"
+#include "../BridgeGlobalShortcut.h"
 
 #include <Windows.h>
 #include <shellapi.h>
@@ -11,7 +12,6 @@
 
 namespace
 {
-constexpr wchar_t kWindowClass[] = L"WindowsFaderBridge.MainWindow";
 constexpr wchar_t kSingleInstanceName[] =
     L"Local\\Lindelea.WindowsFaderBridge.2026";
 
@@ -65,11 +65,7 @@ void WaitForRestartSource()
 
 void ActivateExistingInstance()
 {
-    if (const auto window = FindWindowW(kWindowClass, nullptr))
-    {
-        ShowWindow(window, SW_RESTORE);
-        SetForegroundWindow(window);
-    }
+    bridge::RequestSummon(bridge::Application::WindowsEucon);
 }
 }
 

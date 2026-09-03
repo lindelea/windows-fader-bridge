@@ -23,6 +23,7 @@
 #include "MonitorLayout.h"
 #include "MonitorWriter.h"
 #include "UpperDirectoryLayout.h"
+#include "../BridgeGlobalShortcut.h"
 // Invented model data used only by the explicit, unregistered SDK regression mode.
 #include "../../tests/ApolloBridge.Tests/ChannelFeatureFixture.h"
 #include <Windows.h>
@@ -153,6 +154,8 @@ ValueText DbValueText(float value, float minimum)
     swprintf_s(short4, L"%+.0fdB", value);
     swprintf_s(short8, L"%+.1fdB", value);
     swprintf_s(full, L"%+.1f dB", value);
+    if (wcslen(short4) > 4)
+        swprintf_s(short4, L"%+.0f", value);
     if (value == 0.0F)
     {
         wcscpy_s(short4, L"0dB");
@@ -246,7 +249,8 @@ struct Event
         Visibility,
         Surface,
         Primitive,
-        MonitorPrimitive
+        MonitorPrimitive,
+        ApplicationCommand
     } kind = Kind::Primitive;
     int tag = 0, type = 0;
     NEuCon::uint32 control = 0, member = 0, primitive = 0, flags = 0;
@@ -301,6 +305,79 @@ struct Inbox
         wakePending = false;
         return result;
     }
+};
+
+class ApplicationCommands final : public EuProcessor
+{
+  public:
+    explicit ApplicationCommands(Inbox &inbox)
+        : inbox_(inbox), applications_(this), windows_(this), uad_(this), mackie_(this)
+    {
+        Check(SetAttribute(kATRIBID_ProcessorType, kProcType_Command), "Command processor type");
+        Check(SetAttribute(kATRIBID_ContainsSoftKeys, 1), "Command processor soft keys");
+        Check(SetAttribute(kATRIBID_SimpleUserVisibleName, tEuString(L"Key Commands")),
+              "Command processor name");
+        Check(SetAttribute(kATRIBID_DoNotSort, 1), "Command processor order");
+        Check(SetPersistenceID(L"Lindelea.UadConsoleBridge.Commands.v1"),
+              "Command processor persistence");
+        Check(applications_.SetId(1), "Application command container ID");
+        Check(applications_.SetAttribute(kATRIBID_SimpleUserVisibleName,
+                                         tEuString(L"EUCON Applications")),
+              "Application command container name");
+        Check(applications_.SetAttribute(kATRIBID_DoNotSort, 1),
+              "Application command container order");
+        Check(applications_.SetPersistenceID(L"Lindelea.UadConsoleBridge.Commands.Applications.v1"),
+              "Application command container persistence");
+        Check(AddControl(applications_), "Add application command container");
+        Add(windows_, windowsId_, L"Windows EUCON", L"WindowsEucon", false);
+        Add(uad_, uadId_, L"UAD EUCON", L"UadEucon", true);
+        Add(mackie_, mackieId_, L"Mackie Control", L"MackieControl", false);
+    }
+    ~ApplicationCommands() override
+    {
+        applications_.Remove(mackieId_);
+        applications_.Remove(uadId_);
+        applications_.Remove(windowsId_);
+        RemoveControl(applications_);
+    }
+    void OnPrimitiveCallback(tEVT eventType, NEuCon::uint32, NEuCon::uint32 controlId,
+                             NEuCon::uint32 memberId, NEuCon::uint32, EuPrimitiveControl *,
+                             NEuCon::uint16, void * = nullptr) override
+    {
+        if (eventType != kEVT_PRIM_StateChange || controlId != 1) return;
+        Event event;
+        event.kind = Event::Kind::ApplicationCommand;
+        event.thread = GetCurrentThreadId();
+        if (memberId == windowsId_) event.type = static_cast<int>(bridge::Application::WindowsEucon);
+        else if (memberId == uadId_) event.type = static_cast<int>(bridge::Application::UadEucon);
+        else if (memberId == mackieId_) event.type = static_cast<int>(bridge::Application::MackieControl);
+        else return;
+        inbox_.Push(event);
+    }
+
+  private:
+    void Add(EuControlSwitch &control, NEuCon::uint32 &member, const wchar_t *name,
+             const wchar_t *token, bool selfApplication)
+    {
+        Check(control.SetAttribute(kATRIBID_SimpleUserVisibleName, tEuString(name)),
+              "Application command name");
+        Check(control.SetPersistenceID(std::wstring(L"Lindelea.UadConsoleBridge.Commands.") + token +
+                                       L".v1"),
+              "Application command persistence");
+        OneShotSwitch(Primitive(control, EuControlSwitch::kID_Switch));
+        Check(control.SetLedOverride(selfApplication), "Application command LED");
+        if (selfApplication)
+        {
+            auto &led = Primitive(control, EuControlSwitch::kID_Led);
+            Check(led.SetCurrentIndex(kLEDStatus_On), "Current application LED state");
+            Check(led.Refresh(), "Current application LED refresh");
+        }
+        Check(applications_.PushBack(&control, member), "Add application command");
+    }
+    Inbox &inbox_;
+    EuControlSwitchArray applications_;
+    EuControlSwitch windows_, uad_, mackie_;
+    NEuCon::uint32 windowsId_ = 0, uadId_ = 0, mackieId_ = 0;
 };
 class Node final : public EuNode
 {
@@ -1427,6 +1504,7 @@ struct ApolloEucon::Impl
     std::unique_ptr<Node> node;
     std::map<std::string, std::unique_ptr<Strip>> strips;
     std::unique_ptr<ControlRoom> controlRoom;
+    std::unique_ptr<ApplicationCommands> applicationCommands;
     bool manager = false, registered = false;
     int nextTag = 1;
     uint64_t eventCount = 0;
@@ -1450,6 +1528,8 @@ struct ApolloEucon::Impl
             Check(node->SetSimpleFriendlyName(L"UAD Console Bridge for EUCON"), "Node friendly name");
             Check(node->SetUserVisibleName(L"UAD Console Bridge for EUCON"), "Node visible name");
             Check(node->SetAttribute2(kATRIBID_ProcessorMeterAPIVersion, kMeterAPIVersion_3_1), "Meter API");
+            applicationCommands = std::make_unique<ApplicationCommands>(inbox);
+            Check(node->RegisterProcessor(*applicationCommands), "Register command processor");
             int order = 0;
             for (const auto &c : SurfaceChannels(initial))
                 Add(c, ++order);
@@ -1483,6 +1563,12 @@ struct ApolloEucon::Impl
             {
                 CleanupResult(node->UnregisterProcessor(*controlRoom), "Unregister monitor");
                 controlRoom.reset();
+            }
+            if (applicationCommands)
+            {
+                CleanupResult(node->UnregisterProcessor(*applicationCommands),
+                              "Unregister command processor");
+                applicationCommands.reset();
             }
             if (registered)
                 CleanupResult(EuCon::GetInstance().UnregisterNode(*node), "Unregister node");
@@ -1529,6 +1615,8 @@ struct ApolloEucon::Impl
         for (const auto &event : inbox.Take())
         {
             bool queued = false;
+            if (event.kind == Event::Kind::ApplicationCommand)
+                queued = bridge::RequestSummon(static_cast<bridge::Application>(event.type));
             if (event.kind == Event::Kind::MonitorPrimitive && controlRoom)
                 queued = controlRoom->Dispatch(event);
             if (event.kind == Event::Kind::Primitive)
@@ -1823,7 +1911,11 @@ std::string RunEuconTextTests()
                 tEuString actual;
                 Check(p.GetValueAt(index, actual, width), "Value text readback");
                 if (actual != *text)
-                    throw std::runtime_error("Value text width mismatch");
+                    throw std::runtime_error(
+                        "Value text width mismatch at index " + std::to_string(index) +
+                        " width " + std::to_string(static_cast<int>(width)) + " (expected " +
+                        std::to_string(text->size()) + " characters, received " +
+                        std::to_string(actual.size()) + ")");
                 ++checks;
             }
         };
@@ -1839,6 +1931,14 @@ std::string RunEuconTextTests()
         // without registering any application or accessing an audio engine.
         Inbox testInbox;
         Node testNode(testInbox);
+        {
+            ApplicationCommands commands(testInbox);
+            Check(testNode.Freeze(), "Command model freeze");
+            Check(testNode.RegisterProcessor(commands), "Command model register");
+            Check(testNode.UnregisterProcessor(commands), "Command model unregister");
+            Check(testNode.Thaw(), "Command model thaw");
+            checks += 4;
+        }
         auto fixture = ConsoleFixture();
         AddMonitorFixture(fixture);
         const auto model = BuildSnapshot(fixture);
@@ -1964,7 +2064,7 @@ std::string RunEuconTextTests()
                 strip.Apply(selected, tag, false);
                 strip.ApplyMonitor(configured.monitors.front(), 0);
                 if (!strip.ConfigMarkersForTest() || !strip.UpperLinksForTest() ||
-                    !strip.ConfigValueForTest("/SampleRate", L"48 kHz") ||
+                    !strip.ConfigValueForTest("/SampleRate", L"48 KHZ") ||
                     !strip.ConfigValueForTest(selected.path + "/effects/2/Preset", L"NEUTRAL") ||
                     !strip.ConfigValueForTest(selected.path + "/effects/0/EffectName", L"NONE"))
                     throw std::runtime_error("Expanded Config model/readback failed");

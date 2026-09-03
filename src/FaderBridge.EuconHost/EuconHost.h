@@ -56,6 +56,7 @@ public:
     int InitializationError() const noexcept { return initializationError_; }
     int ApplyAudioFrame(const AudioFrame& frame);
     bool HandleSurfaceChange(const SurfaceChange& change);
+    bool SelectTrack(const std::wstring& trackKey);
     void FlushPendingMotors();
 
 private:

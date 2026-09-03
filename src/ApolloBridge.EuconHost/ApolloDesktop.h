@@ -2,6 +2,7 @@
 #include "Model.h"
 #include "DesktopChannelStatus.h"
 #include "Preferences.h"
+#include "../BridgeGlobalShortcut.h"
 #include <Windows.h>
 
 #include <CommCtrl.h>

@@ -81,6 +81,7 @@
     <ClCompile Include="main.cpp" />
     <ClCompile Include="NativeAudioController.cpp" />
     <ClCompile Include="WindowsMediaController.cpp" />
+    <ClCompile Include="WindowsMediaObserver.cpp" />
     <ClCompile Include="WindowsCommandExecutor.cpp" />
     <ClCompile Include="WindowsCommandProcessor.cpp" />
     <ClCompile Include="WindowsSystemProcessor.cpp" />
@@ -92,6 +93,7 @@
     <ClInclude Include="EuconHost.h" />
     <ClInclude Include="NativeAudioController.h" />
     <ClInclude Include="WindowsMediaController.h" />
+    <ClInclude Include="WindowsMediaObserver.h" />
     <ClInclude Include="WindowsCommand.h" />
     <ClInclude Include="WindowsCommandExecutor.h" />
     <ClInclude Include="WindowsCommandProcessor.h" />

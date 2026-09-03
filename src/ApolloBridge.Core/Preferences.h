@@ -1,6 +1,7 @@
 #pragma once
 #include "Json.h"
 #include <cmath>
+#include <cstdint>
 #include <sstream>
 #include <stdexcept>
 
@@ -30,6 +31,8 @@ struct Preferences
     std::string language = "zh-CN";
     bool background = true, startMinimized = false, autoConnect = true;
     bool restorePermissions = false, configExtension = true;
+    bool focusShortcutEnabled = true, focusReturnToBackground = true;
+    std::uint32_t focusShortcutModifiers = 7, focusShortcutKey = 'U';
     AccessPolicy access;
     double monitorCeiling = -20;
     std::string trustedSystem;
@@ -44,6 +47,9 @@ inline void ValidatePreferences(const Preferences &p)
         throw std::invalid_argument("Sensitive controls require channel permission");
     if (p.trustedSystem.size() > 4096)
         throw std::invalid_argument("Invalid saved system identity");
+    if (!p.focusShortcutModifiers || (p.focusShortcutModifiers & ~15U) ||
+        !p.focusShortcutKey || p.focusShortcutKey > 0xFE)
+        throw std::invalid_argument("Invalid global shortcut");
 }
 inline std::string PreferenceString(const std::string &s)
 {
@@ -81,11 +87,15 @@ inline std::string EncodePreferences(const Preferences &p)
     flag("autoConnect", p.autoConnect);
     flag("restorePermissions", p.restorePermissions);
     flag("configExtension", p.configExtension);
+    flag("focusShortcutEnabled", p.focusShortcutEnabled);
+    flag("focusReturnToBackground", p.focusReturnToBackground);
     flag("channels", p.access.channels);
     flag("monitor", p.access.monitor);
     flag("sensitive", p.access.sensitive);
     flag("configuration", p.access.configuration);
-    o << ",\n  \"monitorCeiling\": " << p.monitorCeiling
+    o << ",\n  \"focusShortcutModifiers\": " << p.focusShortcutModifiers
+      << ",\n  \"focusShortcutKey\": " << p.focusShortcutKey
+      << ",\n  \"monitorCeiling\": " << p.monitorCeiling
       << ",\n  \"trustedSystem\": " << PreferenceString(p.trustedSystem) << "\n}\n";
     return o.str();
 }
@@ -119,6 +129,8 @@ inline Preferences DecodePreferences(const std::string &text)
     flag("autoConnect", p.autoConnect);
     flag("restorePermissions", p.restorePermissions);
     flag("configExtension", p.configExtension);
+    flag("focusShortcutEnabled", p.focusShortcutEnabled);
+    flag("focusReturnToBackground", p.focusReturnToBackground);
     flag("channels", p.access.channels);
     flag("monitor", p.access.monitor);
     flag("sensitive", p.access.sensitive);
@@ -129,6 +141,18 @@ inline Preferences DecodePreferences(const std::string &text)
             throw std::invalid_argument("Invalid monitor ceiling");
         p.monitorCeiling = j.At("monitorCeiling").Number(NAN);
     }
+    const auto shortcutNumber = [&](const char *key, std::uint32_t &out) {
+        if (!j.Has(key)) return;
+        if (j.At(key).kind != Json::Kind::Number)
+            throw std::invalid_argument("Invalid global shortcut");
+        const auto value = j.At(key).Number(NAN);
+        if (!std::isfinite(value) || value < 0 || value > 0xffffffffU ||
+            std::floor(value) != value)
+            throw std::invalid_argument("Invalid global shortcut");
+        out = static_cast<std::uint32_t>(value);
+    };
+    shortcutNumber("focusShortcutModifiers", p.focusShortcutModifiers);
+    shortcutNumber("focusShortcutKey", p.focusShortcutKey);
     ValidatePreferences(p);
     return p;
 }

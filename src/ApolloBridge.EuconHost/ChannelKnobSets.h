@@ -274,7 +274,10 @@ class ChannelKnobSets
                               key == "@hint" ? "CONFIG" : found == values.end() ? "N/A" : found->second;
             if (cell.lastDisplay != text)
             {
-                UpdateText(Primitive(cell.control, EuControlKnobCell::kID_Knob), Wide(text),
+                auto display = Wide(text);
+                std::transform(display.begin(), display.end(), display.begin(),
+                               [](wchar_t c) { return static_cast<wchar_t>(std::towupper(c)); });
+                UpdateText(Primitive(cell.control, EuControlKnobCell::kID_Knob), display,
                            "Global Config preview");
                 cell.lastDisplay = text;
             }

@@ -5,12 +5,14 @@
 #include <set>
 #include <algorithm>
 #include <sstream>
+#include <cstdint>
 
 // Only project-owned IDs may name device files. No paths are read from the manifest.
 struct MackieWorkspace
 {
     std::wstring language = PRIMARYLANGID(GetUserDefaultUILanguage()) == LANG_CHINESE ? L"zh" : L"en";
     bool closeToTray = true;
+    std::uint32_t shortcutModifiers = 7, shortcutKey = 'M';
     std::vector<std::string> devices;
     std::string selected;
     std::filesystem::path root;
@@ -40,6 +42,8 @@ struct MackieWorkspace
             else if(key=="selected"&&row>>std::quoted(value)&&ValidId(value))result.selected=value;
             else if(key=="language"&&row>>std::quoted(value)&&(value=="zh"||value=="en"))result.language=value=="en"?L"en":L"zh";
             else if(key=="closeToTray"){int n=-1;if(row>>n&&(n==0||n==1))result.closeToTray=n!=0;}
+            else if(key=="shortcutModifiers"){unsigned n=0;if(row>>n&&n&&!(n&~15U))result.shortcutModifiers=n;}
+            else if(key=="shortcutKey"){unsigned n=0;if(row>>n&&n<=0xFE)result.shortcutKey=n;}
         }
         if(std::find(result.devices.begin(),result.devices.end(),result.selected)==result.devices.end())
             result.selected=result.devices.empty()?"":result.devices.front();
@@ -49,13 +53,16 @@ struct MackieWorkspace
     {
         try
         {
-            if(root.empty()||devices.size()>16)return false;
+            if(root.empty()||devices.size()>16||!shortcutModifiers||
+               (shortcutModifiers&~15U)||!shortcutKey||shortcutKey>0xFE)return false;
             std::set<std::string> seen;
             for(auto& id:devices)if(!ValidId(id)||!seen.insert(id).second)return false;
             std::filesystem::create_directories(root);
             auto path=root/L"workspace.txt",temp=root/L"workspace.txt.new";
             {std::ofstream out(temp,std::ios::binary|std::ios::trunc);if(!out)return false;
-            out<<"version 1\nlanguage "<<std::quoted(language==L"en"?"en":"zh")<<"\ncloseToTray "<<closeToTray<<"\nselected "<<std::quoted(selected)<<'\n';
+            out<<"version 1\nlanguage "<<std::quoted(language==L"en"?"en":"zh")
+               <<"\ncloseToTray "<<closeToTray<<"\nshortcutModifiers "<<shortcutModifiers
+               <<"\nshortcutKey "<<shortcutKey<<"\nselected "<<std::quoted(selected)<<'\n';
             for(auto& id:devices)out<<"device "<<std::quoted(id)<<'\n';out.flush();if(!out)return false;}
             return MoveFileExW(temp.c_str(),path.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH)!=FALSE;
         }catch(...){return false;}

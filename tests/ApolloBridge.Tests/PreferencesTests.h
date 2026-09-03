@@ -5,8 +5,13 @@ void PreferencesTests()
           "Desktop defaults are read only; no automatic permission restoration");
     Check(p.background && p.autoConnect && p.configExtension && p.monitorCeiling == -20,
           "Desktop defaults, CONFIG and explicit ceiling");
+    Check(p.focusShortcutEnabled && p.focusReturnToBackground &&
+              p.focusShortcutModifiers == 7 && p.focusShortcutKey == 'U',
+          "UAD global shortcut defaults are explicit");
     p.trustedSystem = "device \"quoted\" \\ new\nline";
     p.language = "en-US";
+    p.focusShortcutModifiers = 5;
+    p.focusShortcutKey = 0x77; // F8
     for (int bits = 0; bits < 64; ++bits)
     {
         p.access = {bool(bits & 1), bool(bits & 2), bool((bits & 4) && (bits & 1)), bool(bits & 8)};
@@ -16,7 +21,9 @@ void PreferencesTests()
         Check(restored.access == p.access && restored.trustedSystem == p.trustedSystem &&
                   restored.restorePermissions == p.restorePermissions &&
                   restored.configExtension == p.configExtension && restored.language == p.language &&
-                  restored.monitorCeiling == -20,
+                  restored.monitorCeiling == -20 &&
+                  restored.focusShortcutModifiers == p.focusShortcutModifiers &&
+                  restored.focusShortcutKey == p.focusShortcutKey,
               "Versioned settings round trip preserves explicit scope and escaped identity");
     }
     p.access = {true, true, true, true};
@@ -41,6 +48,11 @@ void PreferencesTests()
     for (const auto *invalid : {R"({})", R"({"version":2})", R"({"version":1,"monitorCeiling":12})",
                                 R"({"version":1,"monitorCeiling":"0"})", R"({"version":1,"channels":1})",
                                 R"({"version":1,"language":"unknown"})", R"({"version":1,"sensitive":true})"})
+        Reject([&] { DecodePreferences(invalid); });
+    for (const auto *invalid : {R"({"version":1,"focusShortcutModifiers":0})",
+                                R"({"version":1,"focusShortcutModifiers":16})",
+                                R"({"version":1,"focusShortcutKey":0})",
+                                R"({"version":1,"focusShortcutKey":"U"})"})
         Reject([&] { DecodePreferences(invalid); });
     Reject([] { DecodePreferences(std::string(33000, ' ')); });
     Preferences base, next;

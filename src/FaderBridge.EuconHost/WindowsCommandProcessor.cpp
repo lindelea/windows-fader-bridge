@@ -301,6 +301,12 @@ WindowsCommandProcessor::WindowsCommandProcessor(CommandHandler monoToggleHandle
         { WindowsCommand::ToggleNarrator, L"Toggle Narrator", L"ToggleNarrator" },
         { WindowsCommand::ToggleColorFilters, L"Toggle Color Filters", L"ColorFilters" },
     };
+    static constexpr CommandDefinition euconApplications[] =
+    {
+        { WindowsCommand::FocusWindowsEucon, L"Windows EUCON", L"WindowsEucon" },
+        { WindowsCommand::FocusUadEucon, L"UAD EUCON", L"UadEucon" },
+        { WindowsCommand::FocusMackieControl, L"Mackie Control", L"MackieControl" },
+    };
 
     AddCategory(2U, L"System Tools", L"SystemTools", systemTools, std::size(systemTools));
     AddCategory(3U, L"Settings", L"Settings", settings, std::size(settings));
@@ -319,6 +325,8 @@ WindowsCommandProcessor::WindowsCommandProcessor(CommandHandler monoToggleHandle
         std::size(inputLanguage));
     AddCategory(11U, L"Accessibility", L"Accessibility", accessibility,
         std::size(accessibility));
+    AddCategory(15U, L"EUCON Applications", L"EuconApplications", euconApplications,
+        std::size(euconApplications));
 }
 
 void WindowsCommandProcessor::AddCategory(const NEuCon::uint32 controlId,
@@ -367,11 +375,22 @@ void WindowsCommandProcessor::AddCategory(const NEuCon::uint32 controlId,
                     L"SetOneShot", definition.name);
             }
         }
-        // Stateless commands use the documented one-shot LED behavior: on
-        // while pressed, off when released. Stateful Windows Audio commands
-        // above retain application-owned LED feedback.
-        TraceSdkResult(entry.control->SetLedOverride(false),
+        // Application switching is a radio-like status across the EUCON apps:
+        // this command processor can authoritatively identify Windows EUCON as
+        // itself. The target applications remain ordinary one-shot commands.
+        const bool selfApplication = definition.command == WindowsCommand::FocusWindowsEucon;
+        TraceSdkResult(entry.control->SetLedOverride(selfApplication),
             L"SetLedOverride", definition.name);
+        if (selfApplication)
+        {
+            EuPrimitiveControl* led = nullptr;
+            if (entry.control->GetPrimitive(EuControlSwitch::kID_Led, &led) == kERR_OK && led)
+            {
+                TraceSdkResult(led->SetCurrentIndex(kLEDStatus_On),
+                    L"SetSelfApplicationLed", definition.name);
+                TraceSdkResult(led->Refresh(), L"RefreshSelfApplicationLed", definition.name);
+            }
+        }
         TraceSdkResult(category.container->PushBack(entry.control.get(), entry.memberId),
             L"PushBack", definition.name);
         category.commands.push_back(std::move(entry));

@@ -1261,6 +1261,27 @@ bool EuconHost::HandleSurfaceChange(const SurfaceChange& change)
     return false;
 }
 
+bool EuconHost::SelectTrack(const std::wstring& trackKey)
+{
+    auto* track = FindTrack(trackKey);
+    if (!track || !track->cache.active)
+    {
+        return false;
+    }
+    selectedTrackKey_ = track->key;
+    for (auto& candidate : tracks_)
+    {
+        const auto selected = candidate.get() == track;
+        if (candidate->cache.selected != selected)
+        {
+            candidate->channel->SetSelected(selected);
+            candidate->cache.selected = selected;
+        }
+    }
+    FB_TRACE("DESKTOP_SELECT track=%d", track->route->channelOrder.load());
+    return true;
+}
+
 void EuconHost::RefreshApplicationControls(TrackState& track, const bool force)
 {
     if (!track.channel || !track.cache.focusable)

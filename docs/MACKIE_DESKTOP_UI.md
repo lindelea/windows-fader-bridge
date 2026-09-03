@@ -21,6 +21,10 @@ log-folder access. No EUCON entry points or runtime behavior are changed here.
   other edition. Startup uses `--background`; per-device automatic connection
   is on by default, but only reconnects an explicitly saved, uniquely named pair.
   A second launch restores the everyday window. Quit remains in the tray menu.
+  General settings also provide a user-recordable global summon shortcut,
+  default `Ctrl+Alt+Shift+M`. It always brings the Mackie window forward and has
+  no EUCON-specific automatic-background option. Conflicting replacements are
+  rejected without changing the saved or active shortcut.
 
 ## Assignment workflow
 
@@ -75,11 +79,11 @@ its configuration, or restarting. Switching automatic mode off does not interrup
 an existing connection. Manual mode requires Connect after startup or unplug.
 
 The legacy `settings.txt` remains the primary device file. `workspace.txt` stores
-language, close-to-tray and device IDs; additional configurations live under
+language, close-to-tray, the global summon shortcut and device IDs; additional configurations live under
 `devices/<id>.txt`. Removing a device unregisters it and closes only its handles;
 its file is retained for recovery. Failed saves do not replace active settings.
-Open settings folder resolves a Shell directory object after ensuring the
-directory exists, including the packaged-host redirected AppData case.
+The P1-Nano Windows 80-key preset is exposed only on the Device page while the
+P1-Nano profile is selected. Generic MCU devices use learned custom assignments.
 
 ## Icon provenance
 
@@ -136,9 +140,8 @@ have not yet received visual acceptance testing.
 - Inspected Chinese and English General, Devices, button and Jog pages;
   expanded dark dropdowns, on/off switches, disabled primary-button contrast,
   command descriptions and card insets. The final Release device-name field
-  is visibly outlined. Advanced contains log/settings-folder access, no debug
-  dashboard action. The settings-folder button successfully opened the actual
-  redirected AppData directory in Explorer without the old missing-path dialog.
+  is visibly outlined. Advanced contains log access and detailed MIDI tracing,
+  with no debug dashboard, settings-folder, or device-specific preset action.
 - Added an unconfigured device through the plus button, changed only its auto
   setting, confirmed its mappings were empty, then switched back to the primary
   device with its existing mappings and active connection intact. No additional

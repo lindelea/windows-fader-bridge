@@ -6,6 +6,7 @@
 #include "Protocol.h"
 #include "ApolloDesktop.h"
 #include "DesktopSettings.h"
+#include "../BridgeGlobalShortcut.h"
 #include "../../tests/ApolloBridge.Tests/DesktopSettingsTests.h"
 #include <Windows.h>
 #include <algorithm>
@@ -28,6 +29,8 @@ namespace
 constexpr wchar_t WindowClass[] = L"Lindelea.ApolloBridge.EUCON.Window";
 constexpr wchar_t Title[] = L"UAD Console Bridge for EUCON";
 constexpr UINT EuconEventMessage = WM_APP + 10;
+constexpr int GlobalShortcutId = 1;
+constexpr UINT_PTR ReturnToBackgroundTimer = 0x5541U;
 constexpr int ConnectButton = 101, LogsButton = 102, LanguageButton = 103, ArmButton = 104,
               MonitorButton = 105, AllChannelsButton = 106, SafetyButton = 107, ConfigButton = 108;
 constexpr COLORREF Background = RGB(13, 17, 23), Card = RGB(22, 28, 37), Border = RGB(43, 54, 68);
@@ -222,6 +225,7 @@ struct App
     std::chrono::steady_clock::time_point euconRetryAt{};
     apollo::Preferences preferences;
     std::unique_ptr<apollo::ApolloDesktop> desktop;
+    bridge::GlobalShortcutRegistration globalShortcut;
     std::wstring desktopNotice;
     int firstRow = 0;
     UINT dpi = 96;
@@ -373,6 +377,14 @@ struct App
         {
             auto next = requested;
             apollo::ValidatePreferences(next);
+            const auto oldShortcut = bridge::Shortcut{preferences.focusShortcutModifiers,
+                                                       preferences.focusShortcutKey};
+            const auto nextShortcut = bridge::Shortcut{next.focusShortcutModifiers,
+                                                        next.focusShortcutKey};
+            if (!globalShortcut.Apply(window, GlobalShortcutId, next.focusShortcutEnabled,
+                                      nextShortcut))
+                return T(L"快捷键不可用或已被其他程序占用。原快捷键保持有效。",
+                         L"The shortcut is unavailable or already in use. The previous shortcut remains active.");
             if (activate && FreshDesktopState() && snapshot.configuration)
                 next.trustedSystem = snapshot.configuration->systemIdentity;
             else next.trustedSystem = preferences.trustedSystem;
@@ -388,6 +400,8 @@ struct App
         }
         catch (const std::exception &e)
         {
+            globalShortcut.Apply(window, GlobalShortcutId, preferences.focusShortcutEnabled,
+                                 {preferences.focusShortcutModifiers, preferences.focusShortcutKey});
             bool startupRestored = true;
             if (startupChanged) try { apollo::RestoreDesktopStartup(oldStartup); } catch (...) { startupRestored = false; }
             apollo::Log(std::string("desktop settings: ") + e.what());
@@ -400,6 +414,18 @@ struct App
             return T(L"设置未保存。请检查 Windows 启动项或当前用户文件访问。",
                      L"Settings were not saved. Check the Windows startup entry or current-user file access.");
         }
+    }
+    void SummonForEucon()
+    {
+        if (desktop) desktop->Show();
+        else { ShowWindow(window, SW_RESTORE); SetForegroundWindow(window); }
+        KillTimer(window, ReturnToBackgroundTimer);
+        // EuControl resolves the newly focused application asynchronously.
+        // Always settle to the configured final state so EUCON Key Commands
+        // and the global keyboard shortcut cannot diverge.
+        SetTimer(window, ReturnToBackgroundTimer, 400U, nullptr);
+        apollo::Log(std::string("eucon summon requested return-to-background=") +
+                    (preferences.focusReturnToBackground ? "1" : "0"));
     }
     void UpdateDesktop()
     {
@@ -988,6 +1014,21 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM w, LPARAM l)
         app->window = window;
         SetWindowLongPtrW(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(app));
     }
+    if (app && message == bridge::SummonMessage())
+    {
+        apollo::Log(std::string("eucon summon source=") +
+                    (w == bridge::SummonFromEuconKeyCommand ? "key-command" : "application"));
+        if (w == bridge::SummonFromEuconKeyCommand &&
+            app->preferences.focusShortcutEnabled &&
+            bridge::InvokeRegisteredShortcut(
+                {app->preferences.focusShortcutModifiers, app->preferences.focusShortcutKey}))
+        {
+            apollo::Log("eucon summon hotkey dispatched");
+            return 0;
+        }
+        app->SummonForEucon();
+        return 0;
+    }
     if (!app)
         return DefWindowProcW(window, message, w, l);
     switch (message)
@@ -1023,8 +1064,29 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM w, LPARAM l)
         app->Layout();
         return 0;
     case WM_TIMER:
+        if (w == ReturnToBackgroundTimer)
+        {
+            KillTimer(window, ReturnToBackgroundTimer);
+            if (app->preferences.focusReturnToBackground)
+            {
+                if (app->desktop) app->desktop->Hide();
+            }
+            else if (app->desktop)
+                app->desktop->Show();
+            else
+            {
+                ShowWindow(window, SW_RESTORE);
+                SetForegroundWindow(window);
+            }
+            apollo::Log(std::string("eucon summon settled return-to-background=") +
+                        (app->preferences.focusReturnToBackground ? "1" : "0"));
+            return 0;
+        }
         app->Tick();
         return 0;
+    case WM_HOTKEY:
+        if (w == GlobalShortcutId) { app->SummonForEucon(); return 0; }
+        break;
     case WM_COMMAND:
         app->Command(LOWORD(w));
         return 0;
@@ -1212,7 +1274,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show)
         }
         if (auto window = FindWindowW(WindowClass, nullptr))
         {
-            if (!background) PostMessageW(window, WM_APP + 9, 0, 0);
+            if (!background) PostMessageW(window, bridge::SummonMessage(), 0, 0);
         }
         CloseHandle(mutex);
         return 0;
@@ -1300,6 +1362,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show)
             result = 1;
         else
         {
+            app.window = window;
+            if (!preview && !diagnostics &&
+                !app.globalShortcut.Apply(window, GlobalShortcutId, app.preferences.focusShortcutEnabled,
+                    {app.preferences.focusShortcutModifiers, app.preferences.focusShortcutKey}))
+                app.desktopNotice = app.T(L"全局调出快捷键已被占用，请在设置中重新录制。",
+                                           L"The global summon shortcut is already in use. Record another shortcut in Settings.");
             const BOOL dark = TRUE;
             DwmSetWindowAttribute(window, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
             if (diagnostics) ShowWindow(window, show);

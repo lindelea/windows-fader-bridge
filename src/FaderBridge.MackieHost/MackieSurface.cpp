@@ -293,7 +293,7 @@ void Surface::Feedback(std::uint64_t now, bool force)
     // below motor/touch traffic; do not assume a fast USB-only controller.
     const bool ringsDue = force || now >= ringDue_;
     const bool lcdDue = force || now >= lcdDue_;
-    if (ringsDue) ringDue_ = now + 50;
+    if (ringsDue) ringDue_ = now + 30;
     if (lcdDue) lcdDue_ = now + 200;
     for (int i = 0; i <= Master; ++i)
     {
@@ -341,7 +341,7 @@ void Surface::Feedback(std::uint64_t now, bool force)
     }
     if (MetersEnabled && (force || now >= meterDue_))
     {
-        meterDue_ = now + 50;
+        meterDue_ = now + 30;
         for (int i = 0; i < Strips; ++i)
         {
             const auto track = At(i);

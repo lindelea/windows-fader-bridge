@@ -1,6 +1,6 @@
 # Windows Fader Bridge 可分配命令中文手册
 
-本手册对应 Windows Fader Bridge 当前发布的 14 个分类、186 个 EUCON
+本手册对应 Windows Fader Bridge 当前发布的 15 个分类、189 个 EUCON
 可分配命令。EuControl 中显示的是英文名称，因此每个表格都保留了
 “界面英文名”，方便直接查找和分配。
 
@@ -323,6 +323,17 @@ Avid Control 或其他兼容表面的哪个按键，由 EuControl 管理。
 | Magnifier Zoom Out | 放大镜缩小 | 降低放大镜倍率。 |
 | Toggle Narrator | 切换讲述人 | 打开或关闭 Windows 屏幕朗读。 |
 | Toggle Color Filters | 切换颜色滤镜 | 打开或关闭已在辅助功能设置中启用的颜色滤镜。 |
+
+### 15. EUCON Applications（EUCON 应用）
+
+| 界面英文名 | 中文名称 | 简单说明 |
+| --- | --- | --- |
+| Windows EUCON | Windows EUCON | 调出已运行的 Windows Fader Bridge for EUCON。 |
+| UAD EUCON | UAD EUCON | 调出已运行的 UAD Console Bridge for EUCON。 |
+| Mackie Control | Mackie Control | 调出已运行的 Windows Fader Bridge for Mackie Control。 |
+
+这三个命令使用应用间消息，不会模拟全局快捷键，也不会启动尚未运行的程序。
+因此用户以后重新录制快捷键，不会破坏 EuControl 中已经保存的按键分配。
 
 ## 五、常见问题
 

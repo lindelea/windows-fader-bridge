@@ -86,6 +86,24 @@ executable path. It does not launch Console, EuControl or any driver. Tray Quit
 revokes permissions and shuts down the adapter. Closing the window follows the
 saved background preference. A missing tray never leaves the app inaccessible.
 
+## Multiple-EUCON-application switching
+
+General settings include a global summon shortcut, enabled by default as
+`Ctrl+Alt+Shift+U`, and an optional Return to background after detection policy.
+The shortcut is user-recordable, persisted with the other strict JSON settings,
+and replaced only after Windows accepts the new global registration. A conflict
+keeps the previous shortcut active. The default 400 ms foreground interval is
+intended for EuControl's documented OS-focus tracking; it does not change the
+EUCON node, assignment, application priority, or control permissions.
+
+The adapter also publishes one standard, lifetime-owned `Key Commands`
+processor with an `EUCON Applications` container and Windows EUCON, UAD EUCON,
+and Mackie Control commands. Every object has a permanent versioned persistence
+ID. The EUCON callback only queues an application target; the owner thread sends
+the private summon message. No key sequence is injected and stopped programs
+are not launched. S3 and Avid Control assignment/focus behavior remains to be
+verified physically.
+
 ## Offline UI verification
 
 `--ui-preview` skips the observer and never initializes EUCON or a control
@@ -110,7 +128,8 @@ Initial overview/settings validation on 2026-08-31 (before the channel-list revi
 - Offline smoke passes with all controllers locked, no SDK initialization and
   no network/audio/MIDI activity.
 - Windows visual and interaction QA: Chinese and English, dark combo menus,
-  keyboard navigation, switch rendering, client size down to 1020 × 710,
+  keyboard navigation and switch rendering. The expanded General page now uses
+  a 1020 × 820 minimum client layout,
   ceiling input rejection above 0 dB and successful preview save at 0 dB.
   Closing with background enabled keeps the preview process alive; launching
   again restores the same window/process. Disabling background and closing

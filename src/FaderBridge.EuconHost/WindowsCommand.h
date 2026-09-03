@@ -203,4 +203,8 @@ enum class WindowsCommand : std::uint32_t
     MagnifierZoomOut,
     ToggleNarrator,
     ToggleColorFilters,
+
+    FocusWindowsEucon,
+    FocusUadEucon,
+    FocusMackieControl,
 };
