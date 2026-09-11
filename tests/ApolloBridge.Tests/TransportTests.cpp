@@ -797,7 +797,7 @@ void MonitorWrites()
               "A live level above the ceiling can be reduced by an authorized level request");
         before = engine.writes.load();
         engine.SetProperty(m.path, "CRMonitorLevel", ControlNumber(-30));
-        for (const auto &change : {std::pair<const char *, const char *>{"AltMonSelection", "1"},
+        for (const auto &change : {std::pair<const char *, const char *>{"AltMonSelection", "3"},
                                    {"Enable24dBMode", "true"},
                                    {"DimAttenuation", "27"},
                                    {"SurroundMonitorMode", "\"5.1\""}})

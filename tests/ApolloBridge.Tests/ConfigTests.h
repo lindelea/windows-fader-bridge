@@ -177,7 +177,8 @@ void ConfigTests()
     Check(category("DYNAMICS") != browser.children.end() &&
               category("DYNAMICS")->configChoices.front() == 1 &&
               category("REVERB") != browser.children.end() &&
-              category("TAPE SAT") != browser.children.end() && category("OTHER") != browser.children.end(),
+              category("TAPE SAT") != browser.children.end() &&
+              category("OTHER") != browser.children.end(),
           "Plugin browser exposes one filtered selector knob per category");
     Check(PluginShortLabel("UAD Teletronix LA-2A Silver") == "LA2A SIL", "LA-2A OLED label");
     Check(PluginShortLabel("UAD 1176 Rev A") == "1176 A", "1176 OLED label");

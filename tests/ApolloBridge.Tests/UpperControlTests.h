@@ -58,10 +58,10 @@ void UpperControlTests()
     const std::string path = "/devices/3/inputs/0";
     AddUnisonFixture(nodes, path);
     const auto state = BuildSnapshot(nodes);
-    Check(state.monitors.size() == 1 && DescribeMonitor(state.monitors.front()).size() == 11,
-          "Control room includes level mute dim depth mono talk and five source choices");
+    Check(state.monitors.size() == 1 && DescribeMonitor(state.monitors.front()).size() == 15,
+          "Control room includes existing controls, three speaker sets and five source choices");
     const auto monitorCells = DescribeMonitor(state.monitors.front());
-    Check(monitorCells[6].label == "Monitor" && monitorCells[6].source == "mon" &&
+    Check(monitorCells[10].label == "Monitor" && monitorCells[10].source == "mon" &&
               monitorCells.back().label == "Cue 4" && monitorCells.back().source == "cue4",
           "Friendly monitor labels retain exact native source values");
     const auto c = state.channels.front();

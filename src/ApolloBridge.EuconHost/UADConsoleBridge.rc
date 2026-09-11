@@ -1,5 +1,5 @@
 #include <windows.h>
-#include "../BridgeProductVersion.h"
+#include "ApolloProductVersion.h"
 1 ICON "assets/UADConsoleBridge.Eucon.ico"
 VS_VERSION_INFO VERSIONINFO
  FILEVERSION BRIDGE_PRODUCT_VERSION_COMMA

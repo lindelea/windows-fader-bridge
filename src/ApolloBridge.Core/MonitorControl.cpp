@@ -38,7 +38,10 @@ std::string FieldPath(const Monitor &m, MonitorField field)
 {
     if (field == MonitorField::Talk)
         return "/TalkbackOn/value";
-    const auto parent = field == MonitorField::DimAmount ? m.path.substr(0, m.path.find('/', 9)) : m.path;
+    if (field == MonitorField::TalkLevel)
+        return m.talkbackMicPath + "/FaderLevel/value";
+    const auto parent = field == MonitorField::DimAmount || field == MonitorField::Speakers
+                            ? m.path.substr(0, m.path.find('/', 9)) : m.path;
     return parent + "/" + FieldName(field) + "/value";
 }
 } // namespace
@@ -60,6 +63,10 @@ const char *FieldName(MonitorField field)
         return "MixInSource";
     case MonitorField::Talk:
         return "TalkbackOn";
+    case MonitorField::TalkLevel:
+        return "FaderLevel";
+    case MonitorField::Speakers:
+        return "AltMonSelection";
     }
     throw std::invalid_argument("Unknown monitor field");
 }
@@ -81,6 +88,10 @@ const std::optional<Parameter> &FieldParameter(const Monitor &m, MonitorField fi
         return m.sourceSelect;
     case MonitorField::Talk:
         return m.talk;
+    case MonitorField::TalkLevel:
+        return m.talkLevel;
+    case MonitorField::Speakers:
+        return m.speakerSelection;
     }
     throw std::invalid_argument("Unknown monitor field");
 }
@@ -107,6 +118,20 @@ bool MonitorFieldAvailable(const Monitor &m, MonitorField field)
     const auto &p = FieldParameter(m, field);
     if (!p || !p->enabled || p->reportedReadOnly || p->path != FieldPath(m, field))
         return false;
+    if (field == MonitorField::Speakers)
+        return p->value.kind == Json::Kind::Number && p->minimum && p->maximum &&
+               *p->minimum == 0 && *p->maximum >= 0 && *p->maximum <= 2 &&
+               std::floor(*p->maximum) == *p->maximum &&
+               std::isfinite(p->value.Number(NAN)) &&
+               std::floor(p->value.Number()) == p->value.Number() &&
+               p->value.Number() >= 0 && p->value.Number() <= *p->maximum;
+    if (field == MonitorField::TalkLevel)
+        return MonitorFieldAvailable(m, MonitorField::Talk) &&
+               p->value.kind == Json::Kind::Number && p->minimum && p->maximum &&
+               std::isfinite(*p->minimum) && std::isfinite(*p->maximum) &&
+               *p->minimum >= -144 && *p->maximum <= 12 && *p->minimum < *p->maximum &&
+               std::isfinite(p->value.Number(NAN)) && p->value.Number() >= *p->minimum &&
+               p->value.Number() <= *p->maximum;
     if (field == MonitorField::Source)
     {
         const auto choices = MonitorSources(m);
@@ -147,11 +172,11 @@ bool MonitorEligible(const Monitor &m)
         *m.level->maximum > 0 || *m.level->minimum >= *m.level->maximum || !std::isfinite(m.level->value.Number(NAN)) ||
         m.level->value.Number() < *m.level->minimum || m.level->value.Number() > *m.level->maximum)
         return false;
-    // The initial write scope is explicitly main/stereo, with no calibrated
+    // The write scope is stereo monitoring, with no calibrated
     // high-headroom mode. Other configurations retain read-only telemetry.
     const auto device = m.path.substr(0, m.path.find('/', 9));
     return m.speakerSelection && m.speakerSelection->path == device + "/AltMonSelection/value" &&
-           m.speakerSelection->value.kind == Json::Kind::Number && m.speakerSelection->value.Number(NAN) == 0 &&
+           MonitorFieldAvailable(m, MonitorField::Speakers) &&
            m.highHeadroom && m.highHeadroom->path == device + "/Enable24dBMode/value" &&
            m.highHeadroom->value.kind == Json::Kind::Boolean && !m.highHeadroom->value.Bool() && m.dimAttenuation &&
            m.dimAttenuation->path == device + "/DimAttenuation/value" &&
@@ -161,7 +186,7 @@ bool MonitorEligible(const Monitor &m)
 bool SameMonitorTarget(const Monitor &a, const Monitor &b)
 {
     if (!MonitorEligible(a) || !MonitorEligible(b) || a.key != b.key || a.path != b.path || a.stereo != b.stereo ||
-        a.mode != b.mode || !SameParameter(a.speakerSelection, b.speakerSelection, true) ||
+        a.mode != b.mode || !SameParameter(a.speakerSelection, b.speakerSelection, false) ||
         !SameParameter(a.highHeadroom, b.highHeadroom, true) ||
         !SameParameter(a.dimAttenuation, b.dimAttenuation, false) ||
         !SameParameter(a.sourceSelect, b.sourceSelect, false) ||
@@ -171,7 +196,8 @@ bool SameMonitorTarget(const Monitor &a, const Monitor &b)
         !SameParameter(a.talkbackMicSelect, b.talkbackMicSelect, true))
         return false;
     for (auto field : {MonitorField::Level, MonitorField::Mute, MonitorField::Dim, MonitorField::Mono,
-                      MonitorField::DimAmount, MonitorField::Source, MonitorField::Talk})
+                      MonitorField::DimAmount, MonitorField::Source, MonitorField::Talk,
+                      MonitorField::TalkLevel, MonitorField::Speakers})
         if (!SameParameter(FieldParameter(a, field), FieldParameter(b, field), false) ||
             MonitorFieldAvailable(a, field) != MonitorFieldAvailable(b, field))
             return false;
@@ -189,6 +215,14 @@ std::string MonitorCommand(const Monitor &m, MonitorField field, const Json &val
         const double n = value.Number(NAN);
         if (value.kind != Json::Kind::Number || !std::isfinite(n) || n < *p->minimum || n > ceiling)
             throw std::invalid_argument("Monitor level exceeds permitted range");
+        scalar = ControlNumber(n).scalar;
+    }
+    else if (field == MonitorField::TalkLevel || field == MonitorField::Speakers)
+    {
+        const auto n = value.Number(NAN);
+        if (value.kind != Json::Kind::Number || !std::isfinite(n) || n < *p->minimum || n > *p->maximum ||
+            (field == MonitorField::Speakers && std::floor(n) != n))
+            throw std::invalid_argument("Unsupported monitor parameter value");
         scalar = ControlNumber(n).scalar;
     }
     else if (field == MonitorField::DimAmount)
@@ -232,7 +266,9 @@ bool SameMonitorValue(MonitorField field, const Json &a, const Json &b)
 {
     if (field == MonitorField::Source)
         return a.kind == Json::Kind::String && b.kind == Json::Kind::String && a.scalar == b.scalar;
-    return SameControlValue(field == MonitorField::Level || field == MonitorField::DimAmount ? ChannelField::Level : ChannelField::Mute, a, b);
+    return SameControlValue(field == MonitorField::Level || field == MonitorField::DimAmount ||
+                            field == MonitorField::TalkLevel || field == MonitorField::Speakers
+                                ? ChannelField::Level : ChannelField::Mute, a, b);
 }
 uint64_t MonitorQueue::Arm(const Snapshot &s, const std::string &key, std::optional<double> ceiling)
 {

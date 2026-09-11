@@ -31,4 +31,6 @@ void Log(const std::string &message);
 std::wstring Wide(const std::string &utf8);
 // Explicit SDK-only regression; no node registration or Apollo connection.
 std::string RunEuconTextTests();
+// Explicit interactive model-isolation diagnostic; synthetic data, no UA connection/writes.
+void RunEuconMonitorProbe();
 } // namespace apollo

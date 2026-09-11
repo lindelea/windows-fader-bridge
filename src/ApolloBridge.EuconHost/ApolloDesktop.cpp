@@ -1,5 +1,5 @@
 #include "ApolloDesktop.h"
-#include "../BridgeProductVersion.h"
+#include "ApolloProductVersion.h"
 #include "DesktopSettings.h"
 #include <algorithm>
 #include <cmath>

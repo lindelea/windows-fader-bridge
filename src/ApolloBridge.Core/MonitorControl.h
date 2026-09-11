@@ -13,7 +13,9 @@ enum class MonitorField
     Mono,
     DimAmount,
     Source,
-    Talk
+    Talk,
+    TalkLevel,
+    Speakers
 };
 const char *FieldName(MonitorField field);
 const std::optional<Parameter> &FieldParameter(const Monitor &monitor, MonitorField field);
@@ -22,7 +24,7 @@ bool SameMonitorTarget(const Monitor &a, const Monitor &b);
 bool MonitorFieldAvailable(const Monitor &monitor, MonitorField field);
 std::vector<std::string> MonitorSources(const Monitor &monitor);
 const std::vector<float> &MonitorDimTable(); // Signed dB, ascending SDK table.
-// No arbitrary paths, source injection, speaker selectors or trim writes.
+// No arbitrary paths, source injection, routing or speaker trim writes.
 Json ConstrainMonitorValue(const Monitor &monitor, MonitorField field, const Json &value, double ceiling);
 std::string MonitorCommand(const Monitor &monitor, MonitorField field, const Json &value, double ceiling);
 bool SameMonitorValue(MonitorField field, const Json &a, const Json &b);

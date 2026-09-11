@@ -23,9 +23,14 @@ inline std::vector<MonitorCell> DescribeMonitor(const Monitor &m)
                                                      {MonitorField::Dim, "Dim"},
                                                      {MonitorField::DimAmount, "Dim dB", "", true},
                                                      {MonitorField::Mono, "Mono"},
-                                                     {MonitorField::Talk, "Talk"}})
+                                                     {MonitorField::Talk, "Talk"},
+                                                     {MonitorField::TalkLevel, "Talk dB", "", true}})
         if (MonitorFieldAvailable(m, cell.field))
             cells.push_back(cell);
+    if (MonitorFieldAvailable(m, MonitorField::Speakers))
+        for (int i = 0; i <= static_cast<int>(*m.speakerSelection->maximum); ++i)
+            cells.push_back({MonitorField::Speakers, i == 0 ? "Main" : "ALT " + std::to_string(i),
+                             std::to_string(i)});
     if (MonitorFieldAvailable(m, MonitorField::Source))
         for (const auto &source : MonitorSources(m))
             cells.push_back(

@@ -439,7 +439,13 @@ void MonitorTests()
     Check(!MonitorEligible(changed), "Surround cannot be treated as stereo control room");
     changed = m;
     changed.speakerSelection->value = ControlNumber(1);
-    Check(!MonitorEligible(changed), "ALT speaker context not silently inherited");
+    Check(MonitorEligible(changed) && SameMonitorTarget(m, changed), "ALT selection is monitor state, not topology");
+    Check(MonitorCommand(m, MonitorField::Speakers, ControlNumber(1), -30) ==
+              std::string("set /devices/3/AltMonSelection/value 1") + '\0', "Exact ALT1 selector command");
+    for (double value : {-1., 0.5, 3., 99.})
+        Reject([&] { MonitorCommand(m, MonitorField::Speakers, ControlNumber(value), -30); });
+    changed.speakerSelection->value = ControlNumber(3);
+    Check(!MonitorEligible(changed), "Unknown speaker set stays blocked");
     changed = m;
     changed.highHeadroom->value = Json::Parse("true");
     Check(!MonitorEligible(changed), "Gain-mode change blocks initial write scope");
@@ -469,8 +475,16 @@ void MonitorTests()
         Json::Parse(R"({"type":"int","value":3})");
     advancedNodes["/devices/3/inputs"].object["children"].object["90"] = Json::Parse("{}");
     advancedNodes["/devices/3/inputs/90"] =
-        Json::Parse(R"({"properties":{"IOType":{"type":"string","value":"TalkbackMic"}}})");
+        Json::Parse(R"({"properties":{"IOType":{"type":"string","value":"TalkbackMic"},"FaderLevel":{"type":"float","min":-144,"max":12,"value":-13}}})");
     auto advanced = BuildSnapshot(advancedNodes).monitors.front();
+    Check(MonitorFieldAvailable(advanced, MonitorField::TalkLevel), "Talk level discovered independently");
+    Check(MonitorCommand(advanced, MonitorField::TalkLevel, ControlNumber(-20), -30) ==
+              std::string("set /devices/3/inputs/90/FaderLevel/value -20") + '\0', "Exact talk mic level command");
+    for (double value : {-145., 13., static_cast<double>(INFINITY)})
+        Reject([&] { MonitorCommand(advanced, MonitorField::TalkLevel, ControlNumber(value), -30); });
+    auto wrongMic = advanced;
+    wrongMic.talkLevel->path = "/devices/3/inputs/91/FaderLevel/value";
+    Check(!MonitorFieldAvailable(wrongMic, MonitorField::TalkLevel), "Talk level cannot address another mic");
     Check(MonitorSources(advanced) == std::vector<std::string>({"mon", "cue1", "cue3", "cue4"}),
           "Only known enabled source tokens published");
     Check(MonitorFieldAvailable(advanced, MonitorField::Talk),

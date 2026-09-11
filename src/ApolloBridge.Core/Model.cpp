@@ -498,7 +498,10 @@ Snapshot BuildSnapshot(const NodeMap &nodes)
                     }
                 }
                 if (!m.talkbackMicPath.empty())
+                {
                     m.talk = ReadParameter(nodes, "/", "TalkbackOn");
+                    m.talkLevel = ReadParameter(nodes, m.talkbackMicPath, "FaderLevel");
+                }
             }
             m.level = ReadParameter(nodes, outputPath, "CRMonitorLevel");
             if (!m.level)

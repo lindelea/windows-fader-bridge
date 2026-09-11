@@ -1274,7 +1274,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show)
 {
     int count = 0;
     auto **arguments = CommandLineToArgvW(GetCommandLineW(), &count);
-    bool smoke = false, sdkTextTest = false, desktopTest = false, experimentalConfig = false;
+    bool smoke = false, sdkTextTest = false, sdkMonitorProbe = false, desktopTest = false, experimentalConfig = false;
     bool diagnostics = false, preview = false, previewConnected = false, background = false;
     int observe = 0;
     for (int i = 1; i < count; ++i)
@@ -1283,6 +1283,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show)
             smoke = true;
         else if (std::wstring_view(arguments[i]) == L"--sdk-text-test")
             sdkTextTest = true;
+        else if (std::wstring_view(arguments[i]) == L"--sdk-monitor-probe")
+            sdkMonitorProbe = true;
         else if (std::wstring_view(arguments[i]) == L"--desktop-self-test") desktopTest = true;
         else if (std::wstring_view(arguments[i]) == L"--experimental-config")
             experimentalConfig = true;
@@ -1301,7 +1303,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show)
         }
     }
     LocalFree(arguments);
-    if (int(smoke) + int(sdkTextTest) + int(desktopTest) + int(observe != 0) + int(preview) > 1 ||
+    if (int(smoke) + int(sdkTextTest) + int(sdkMonitorProbe) + int(desktopTest) + int(observe != 0) + int(preview) > 1 ||
         (previewConnected && !preview) || (preview && diagnostics))
     {
         Print("Select only one diagnostic mode\n");
@@ -1342,7 +1344,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show)
         return 1;
     if (GetLastError() == ERROR_ALREADY_EXISTS)
     {
-        if (sdkTextTest)
+        if (sdkTextTest || sdkMonitorProbe)
         {
             CloseHandle(mutex);
             Print("Close Apollo Bridge before running the SDK text test\n");
@@ -1356,14 +1358,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show)
         return 0;
     }
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
-    if (sdkTextTest)
+    if (sdkTextTest || sdkMonitorProbe)
     {
         int result = 0;
         try
         {
             if (SdkExampleAdapterRunning())
                 throw std::runtime_error("Close other EUCON test adapters first");
-            Print(apollo::RunEuconTextTests());
+            if (sdkMonitorProbe) apollo::RunEuconMonitorProbe();
+            else Print(apollo::RunEuconTextTests());
         }
         catch (const std::exception &error)
         {

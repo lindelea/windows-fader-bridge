@@ -117,3 +117,17 @@ profile may provide that later without pretending unsupported feedback exists.
 - Avid EuControl 2024.10 release notes (meter fix GWSW-16637)
 - iCON P1-Nano product/manual resources
 - Mixxx P1-Nano mapping and manual as an open behavioral reference
+
+## EUCON rotary display modes — 2026-09-12
+
+The SDK's `EuPrimitiveKnob::SetPositionRingMode(kRingOff)` is a useful, verified
+presentation option for a rotary-position control that intentionally has no
+continuous progress meaning. It leaves the encoder/control available while
+removing the position/progress ring. Keep this as an explicit display strategy
+to evaluate for future enumerated choices, selectors, navigation controls and
+other non-progress settings; suitability still has to be checked on both S3
+and Avid Control rather than applied globally.
+
+Do not use `kRingOff` for a continuous level. In particular, UAD `Talk dB` is a
+talkback microphone volume and therefore uses the solid volume-style
+`kRingThermometerLeft` display, just like other attenuation/level controls.

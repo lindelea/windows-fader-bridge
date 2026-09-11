@@ -1,9 +1,8 @@
 # Windows Fader Bridge and UAD Console Bridge
 
-Current application version: **v1.0.0**. This version is shared by Windows
-Fader Bridge for EUCON, Windows Fader Bridge for Mackie Control, and UAD Console
-Bridge for EUCON. Protocol, settings-schema, SDK and dependency versions remain
-independent.
+Current application versions: **UAD Console Bridge for EUCON v1.1.0** and
+**Windows Fader Bridge v1.0.0** for both EUCON and Mackie Control. Product,
+protocol, settings-schema, SDK and dependency versions remain independent.
 
 Control bridges for Windows Core Audio and the UAD Console mixer, with separate
 EUCON and Mackie Control applications.
@@ -239,7 +238,7 @@ Git.
 
 ## Repository status
 
-This repository contains the three independent v1.0.0 applications listed
+This repository contains the three independently versioned applications listed
 above. Development and hardware compatibility validation continue without
 changing their separate executable, settings and protocol boundaries.
 Proprietary Avid SDK content and privately collected research material are

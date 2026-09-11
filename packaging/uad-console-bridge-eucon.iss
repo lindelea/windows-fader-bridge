@@ -1,5 +1,5 @@
 #define ProductName "UAD Console Bridge for EUCON"
-#define ProductVersion "1.0.0"
+#define ProductVersion "1.1.0"
 #define ProductExe "ApolloBridge.Eucon.exe"
 #define ProductRepo "https://github.com/lindelea/uad-console-bridge-eucon"
 

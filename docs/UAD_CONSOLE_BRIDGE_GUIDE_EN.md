@@ -2,7 +2,7 @@
 
 [简体中文](UAD_CONSOLE_BRIDGE_GUIDE_ZH.md)
 
-Current application version: **v1.0.0**.
+Current application version: **v1.1.0**.
 
 A control bridge between UAD Console and EUCON. Apollo and Console continue to
 process audio; the bridge does not replace Console or manage EUCON hardware.
@@ -35,19 +35,22 @@ the window or quit. Login startup is off by default and applies to the current
 Windows user only. Save the option again if the executable location changes.
 
 **Connection** provides automatic EUCON connection, manual connection/retry and
-control suspension. CONFIG is a production feature and is enabled by default;
-changing its setting requires restarting this application.
+control suspension. CONFIG displays the current plug-in configuration and is
+enabled by default. Plug-in selection and insertion from Avid Control/S3 are
+not a supported v1.1.0 feature; use UAD Console for those operations.
 Console, EuControl, drivers and hardware are never restarted by these settings.
 
 **Permissions** offers Read only, Mixing, Full control and Custom profiles:
 
 - Channel control: current eligible online channels, including sends, routing,
   preamps and loaded plug-ins.
-- Control room: monitor level, mute, dim, mono, source and talkback.
+- Control room: monitor level, mute, dim, mono, Mix/Cue sources,
+  Main/ALT1/ALT2 monitor sets, talkback, and Talk dB.
 - Sensitive controls: phantom power, UNISON and talkback to monitors; requires
   channel access.
-- Interface and plug-in configuration: supported CONFIG settings, plug-in
-  selection and existing preset recall. Turn to preview; press In to apply.
+- Interface and plug-in configuration: supported, allowlisted interface
+  settings. Use UAD Console to load or replace plug-ins in v1.1.0; parameters
+  of already loaded plug-ins remain controllable through EUCON.
 
 Full control covers implemented, allowlisted operations, not arbitrary device
 commands. Apply and confirm permissions explicitly. Granting access sends no audio
@@ -72,8 +75,7 @@ Ordinary mixing controls validate the latest device/channel identity, control ty
 and range, then dispatch immediately. EUCON events wake the owner thread without
 waiting for the desktop refresh timer. Continuous gestures dispatch without a fixed
 rate gate and coalesce unsent intermediate positions; Console's live state feed performs final
-reconciliation. Plug-in load/unload, preset recall and CONFIG settings retain full
-preflight and post-write confirmation. A failed operation does not revoke the
+reconciliation. A failed operation does not revoke the
 selected permission, and an uncertain write is never automatically retried.
 Revoking access cannot undo a command already sent. After connection loss, use
 Console or hardware to close talkback if necessary.

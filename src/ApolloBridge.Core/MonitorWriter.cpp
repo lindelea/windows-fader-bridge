@@ -209,6 +209,12 @@ Monitor MonitorController::Feedback(Monitor monitor)
             case MonitorField::Talk:
                 monitor.talk = value;
                 break;
+            case MonitorField::TalkLevel:
+                monitor.talkLevel = value;
+                break;
+            case MonitorField::Speakers:
+                monitor.speakerSelection = value;
+                break;
             }
         }
         ++it;

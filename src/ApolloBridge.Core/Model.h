@@ -77,7 +77,7 @@ struct Monitor
     std::string key, path, deviceName, name, source, mode;
     bool stereo = false;
     std::optional<Parameter> level, mute, dim, mono;
-    std::optional<Parameter> sourceSelect, talk;
+    std::optional<Parameter> sourceSelect, talk, talkLevel;
     std::string talkbackMicPath;
     // Read-only context guards; dimAttenuation is separately allowlisted.
     std::optional<Parameter> speakerSelection, dimAttenuation, highHeadroom;

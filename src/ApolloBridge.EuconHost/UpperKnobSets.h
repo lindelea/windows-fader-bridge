@@ -74,7 +74,8 @@ void UpdateUpperLabel(EuPrimitiveControl &primitive, const UpperLabelText &text)
 }
 tRING MonitorRingMode(MonitorField field)
 {
-    return field == MonitorField::Level || field == MonitorField::DimAmount
+    return field == MonitorField::Level || field == MonitorField::DimAmount ||
+                   field == MonitorField::TalkLevel
                ? kRingThermometerLeft
                : kRingOff;
 }
@@ -189,10 +190,10 @@ class MonitorKnobSet
                         throw std::runtime_error("Missing unused monitor alias knob");
                     Check(knob->SetPositionRingMode(kRingOff), "Unused monitor alias ring off");
                     auto &p = Primitive(cell->control, EuControlKnobCell::kID_LowerSwitch);
-                    if (definition.field == MonitorField::Talk)
-                        RawSwitch(p);
-                    else
-                        Switch(p);
+                    // Upper Control Room buttons represent persistent states.
+                    // In particular Talk is press-on/press-off; publishing raw
+                    // press/release here incorrectly turns it into hold-to-talk.
+                    Switch(p);
                     auto &led = Primitive(cell->control, EuControlKnobCell::kID_LowerSwitchLed);
                     Initialize(led, kTYP_Int, 4);
                     Check(led.LoadValueTableInterpolated(0, 3), "Monitor alias LED");
@@ -246,7 +247,8 @@ class MonitorKnobSet
             else
             {
                 const bool active =
-                    d.field == MonitorField::Source ? p->value.String() == d.source : p->value.Bool();
+                    d.field == MonitorField::Source ? p->value.String() == d.source :
+                    d.field == MonitorField::Speakers ? p->value.Number() == std::stoi(d.source) : p->value.Bool();
                 Check(Primitive(cell->control, EuControlKnobCell::kID_LowerSwitch)
                           .SetCurrentIndex(active ? 1 : 0),
                       "Monitor alias switch feedback");
@@ -285,6 +287,9 @@ class MonitorKnobSet
                                          ControlNumber(MonitorKnobValue(d.field, event.value)), event.epoch);
             if (!d.knob && event.primitive == EuControlKnobCell::kID_LowerSwitch)
             {
+                if (d.field == MonitorField::Speakers)
+                    return event.value && controller.Submit(m.key, d.field,
+                                                             ControlNumber(std::stoi(d.source)), event.epoch);
                 if (d.field == MonitorField::Source)
                 {
                     if (event.value == 0)
@@ -331,6 +336,20 @@ class MonitorKnobSet
                                       : cell->definition.knob ? MonitorRingMode(cell->definition.field)
                                                               : kRingOff;
             if (actual != expected)
+                return false;
+        }
+        return true;
+    }
+    bool SwitchModesForTest() const
+    {
+        for (const auto &cell : cells_)
+        {
+            if (cell->definition.knob || !cell->definition.configKey.empty())
+                continue;
+            auto &primitive = Primitive(cell->control, EuControlKnobCell::kID_LowerSwitch);
+            auto *button = dynamic_cast<EuPrimitiveSwitch *>(&primitive);
+            tSWITCH mode = kSWITCH_NumSwitchmodes;
+            if (!button || button->GetSwitchMode(mode) != kERR_OK || mode != kSWITCH_MultiState)
                 return false;
         }
         return true;
@@ -440,6 +459,8 @@ class UpperDirectory
                 Check(entry->control.SetPersistenceID(Wide(binding.identity)), "Upper cell persistence");
                 Check(entry->control.SetAttribute2(kATRIBID_FuncPersID, Wide(binding.identity)),
                       "Upper cell function");
+                Check(entry->control.SetAttribute2(kATRIBID_NumberOfChildren, 0),
+                      "Upper child count");
                 Label(Primitive(entry->control, EuControlKnobCell::kID_KnobLabelDisplay), L"");
                 auto *navigationKnob =
                     dynamic_cast<EuPrimitiveKnob *>(&Primitive(entry->control, EuControlKnobCell::kID_Knob));
@@ -484,6 +505,8 @@ class UpperDirectory
                 Check(array_.AddChild(entry.member, *child), "Upper link");
                 entry.child = child;
             }
+            Check(entry.control.SetAttribute2(kATRIBID_NumberOfChildren, child ? 1 : 0, true),
+                  "Upper child count update");
             UpdateUpperLabel(Primitive(entry.control, EuControlKnobCell::kID_KnobLabelDisplay),
                              UpperDirectoryLabels(function, child != nullptr));
         }
@@ -544,8 +567,12 @@ class UpperDirectory
             Check(array_.GetContainedControlByIndex(static_cast<NEuCon::uint32>(i), &actual),
                   "Upper position readback");
             tEuString identity;
+            NEuCon::int32 childCount = -1;
             Check(entry.control.GetAttribute(kATRIBID_FuncPersID, identity), "Upper identity readback");
+            Check(entry.control.GetAttribute(kATRIBID_NumberOfChildren, childCount),
+                  "Upper child count readback");
             if (actual != &entry.control || identity != Wide(binding.identity) ||
+                childCount != (entry.child ? 1 : 0) ||
                 !UpperLabelMatches(
                     Primitive(entry.control, EuControlKnobCell::kID_KnobLabelDisplay),
                     UpperDirectoryLabels(UpperDirectoryEntries[i].function, entry.child != nullptr)) ||

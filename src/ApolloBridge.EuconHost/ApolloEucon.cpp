@@ -23,12 +23,14 @@
 #include "FaderScale.h"
 #include "MonitorLayout.h"
 #include "MonitorWriter.h"
+#include "MonitorDiagnostics.h"
 #include "UpperDirectoryLayout.h"
 #include "../BridgeGlobalShortcut.h"
 // Invented model data used only by the explicit, unregistered SDK regression mode.
 #include "../../tests/ApolloBridge.Tests/ChannelFeatureFixture.h"
 #include <Windows.h>
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cmath>
 #include <cwctype>
@@ -251,7 +253,8 @@ struct Event
         Surface,
         Primitive,
         MonitorPrimitive,
-        ApplicationCommand
+        ApplicationCommand,
+        SurfaceFeatures
     } kind = Kind::Primitive;
     int tag = 0, type = 0;
     NEuCon::uint32 control = 0, member = 0, primitive = 0, flags = 0;
@@ -408,6 +411,21 @@ class Node final : public EuNode
             event.thread = GetCurrentThreadId();
             inbox_.Push(event);
         }
+        else if (type == kEVT_AttributeChange || type == kEVT_AttributeAdded ||
+                 type == kEVT_AttributeDeleted)
+        {
+            const auto *change = static_cast<const AttributeChangeData *>(hidden);
+            if (change && change->mAttributeKeyType == kATRIB_KEYTYPE_Int &&
+                change->mIntAttributeKey == kATRIBID_SupportedSurfaceFeatures)
+            {
+                Event event;
+                event.kind = Event::Kind::SurfaceFeatures;
+                event.type = type;
+                event.flags = type == kEVT_AttributeDeleted ? 0 : change->mIntAttributeValue;
+                event.thread = GetCurrentThreadId();
+                inbox_.Push(event);
+            }
+        }
     }
 
   private:
@@ -437,16 +455,17 @@ class ControlRoom final : public EuProcessor
   public:
     ControlRoom(const Monitor &m, int tag, Inbox &inbox, MonitorController &controller)
         : target_(m), tag_(tag), inbox_(inbox), controller_(controller), level_(this), mute_(this),
-          dim_(this), formats_(this), mono_(this), dimAmount_(this), talk_(this), sources_(this)
+          dim_(this), formats_(this), mono_(this), dimAmount_(this), talk_(this), sources_(this),
+          sourceSum_(this), talkLevel_(this), speakerInventory_(this), mainSpeakerAlias_(this)
     {
-        controls_.reserve(4);
+        controls_.reserve(16);
         try
         {
             Check(SetPersistenceID(Wide(m.key + ".control-room")), "Monitor persistence");
-            Check(SetAttribute2(kATRIBID_ProcessorType, kProcType_Monitor), "Monitor processor type");
-            Check(SetAttribute2(kATRIBID_LayoutRule0, kRUL_EuLayoutMonitor), "Monitor layout");
-            Check(SetAttribute2(kATRIBID_SimpleUserVisibleName, L"Control Room"), "Monitor name");
-            Check(SetAttribute2(kATRIBID_ContainsSoftKeys, 1), "Monitor soft keys");
+            Check(SetAttribute2(kATRIBID_ProcessorType, kProcType_Monitor, false), "Monitor processor type");
+            Check(SetAttribute2(kATRIBID_LayoutRule0, kRUL_EuLayoutMonitor, false), "Monitor layout");
+            Check(SetAttribute2(kATRIBID_SimpleUserVisibleName, tEuString(L"Control Room"), false),
+                  "Monitor name");
             Add(level_, Level, EuLayoutMonitor::kNAM_ControlRoom, L"Main");
             auto &knob = Primitive(level_, EuControlKnob::kID_Knob);
             const auto low = static_cast<float>(*m.level->minimum),
@@ -464,6 +483,58 @@ class ControlRoom final : public EuProcessor
             Check(levelRing->SetPositionRingMode(kRingThermometerLeft), "Monitor level ring");
             RawSwitch(Primitive(level_, EuControlKnob::kID_KnobTouchSense));
             Label(Primitive(level_, EuControlKnob::kID_KnobLabelDisplay), L"Mix");
+            if (MonitorFieldAvailable(m, MonitorField::Source))
+            {
+                sourceValues_ = MonitorSources(m);
+                // Match EuConIO's InitControlRoomSource lifecycle and metadata
+                // exactly. The container is attached before its members, and
+                // its monitor layout name is applied after attachment.
+                Check(sources_.SetId(Sources), "Monitor source control ID");
+                Check(sources_.SetAttribute2(kATRIBID_SimpleUserVisibleName,
+                                             tEuString(L"Control Room Source"), false),
+                      "Monitor source name");
+                Check(sources_.SetAttribute2(kATRIBID_DoNotSort, 1, false), "Monitor source order");
+                Check(sources_.SetPersistenceID(L"Control Room Source"),
+                      "Monitor source persistence");
+                Check(AddControl(sources_), "Add monitor source control");
+                controls_.push_back(&sources_);
+                Check(sources_.SetAttribute2(kATRIBID_LayoutName0,
+                                             EuLayoutMonitor::kNAM_ControlRoomSource, false),
+                      "Monitor source layout");
+                sourceButtons_.reserve(sourceValues_.size());
+                sourceMembers_.reserve(sourceValues_.size());
+                for (const auto &value : sourceValues_)
+                {
+                    auto button = std::make_unique<EuControlSwitch>(this);
+                    const auto label = SourceLabel(value);
+                    // ExProcessorMonitor::AddSourceSwitch sets the visible
+                    // name before persistence and before inserting the child.
+                    Check(button->SetAttribute2(kATRIBID_SimpleUserVisibleName, tEuString(label), false),
+                          "Source name");
+                    Check(button->SetPersistenceID(label), "Source persistence");
+                    NEuCon::uint32 member = 0;
+                    Check(sources_.PushBack(button.get(), member), "Add monitor source");
+                    InitSourceButton(*button,
+                                     m.source == value ? static_cast<NEuCon::uint16>(1)
+                                                       : static_cast<NEuCon::uint16>(0));
+                    sourceMembers_.push_back(member);
+                    sourceButtons_.push_back(std::move(button));
+                }
+                // UAD's MixInSource is intercancel-only. This compatibility
+                // candidate exposes that fixed mode; neither the SDK contract
+                // nor physical testing establishes it as necessary for labels.
+                Check(sourceSum_.SetId(SourceSum), "Monitor source mode control ID");
+                Check(sourceSum_.SetAttribute2(kATRIBID_LayoutName0,
+                                               EuLayoutMonitor::kNAM_SourceSum, false),
+                      "Monitor source mode layout");
+                InitSpeakerButton(sourceSum_);
+                auto &sourceMode = Primitive(sourceSum_, EuControlSwitch::kID_Switch);
+                sourceMode.MakeConfirmationCallback(true);
+                Check(sourceMode.SetCurrentIndex(0), "Monitor source mode intercancel state");
+                Check(AddControl(sourceSum_), "Add monitor source mode control");
+                Check(sourceSum_.SetLedOverride(false), "Monitor source mode LED follows state");
+                controls_.push_back(&sourceSum_);
+            }
             hasMute_ = WritableButton(m, MonitorField::Mute);
             hasDim_ = WritableButton(m, MonitorField::Dim);
             hasMono_ = WritableButton(m, MonitorField::Mono);
@@ -477,15 +548,23 @@ class ControlRoom final : public EuProcessor
                 Add(dim_, Dim, EuLayoutMonitor::kNAM_Dim, L"Dim");
                 InitButton(dim_);
             }
-            if (hasMono_)
+            if (MonitorFieldAvailable(m, MonitorField::Speakers))
             {
-                Add(formats_, Formats, EuLayoutMonitor::kNAM_FolddownFormat, L"Folddown Format");
-                Check(formats_.SetAttribute2(kATRIBID_ContainsSoftKeys, 1), "Fold-down soft keys");
-                Check(mono_.SetPersistenceID(L"Mono"), "Mono persistence");
-                Check(mono_.SetAttribute2(kATRIBID_SimpleUserVisibleName, L"Mono"), "Mono label");
-                InitButton(mono_);
-                Check(formats_.PushBack(&mono_, monoMember_), "Add mono format");
-                monoAdded_ = true;
+                // Preserve this candidate's ordering for the A/B comparison.
+                // Semantic assignment is specified by the layout names.
+                const int layouts[] = {EuLayoutMonitor::kNAM_MainSpkrs, EuLayoutMonitor::kNAM_Alt1Spkrs,
+                                       EuLayoutMonitor::kNAM_Alt2Spkrs};
+                for (int i = 0; i <= static_cast<int>(*m.speakerSelection->maximum); ++i)
+                {
+                    auto button = std::make_unique<EuControlSwitch>(this);
+                    Check(button->SetId(MainSpeakers + i), "Monitor speaker control ID");
+                    Check(button->SetAttribute2(kATRIBID_LayoutName0, layouts[i], false),
+                          "Monitor speaker layout");
+                    InitSpeakerButton(*button);
+                    Check(AddControl(*button), "Add monitor speaker control");
+                    controls_.push_back(button.get());
+                    speakerButtons_.push_back(std::move(button));
+                }
             }
             hasDimAmount_ = MonitorFieldAvailable(m, MonitorField::DimAmount);
             if (hasDimAmount_)
@@ -510,27 +589,66 @@ class ControlRoom final : public EuProcessor
                 InitButton(talk_);
                 Check(talk_.SetSwitchMode(kSWITCH_MomentaryLatch), "Talkback momentary/latch");
             }
-            if (MonitorFieldAvailable(m, MonitorField::Source))
+            hasTalkLevel_ = MonitorFieldAvailable(m, MonitorField::TalkLevel);
+            if (hasTalkLevel_)
             {
-                sourceValues_ = MonitorSources(m);
-                Add(sources_, Sources, EuLayoutMonitor::kNAM_ControlRoomSource, L"Control Room Sources");
-                Check(sources_.SetAttribute2(kATRIBID_ContainsSoftKeys, 1), "Monitor source soft keys");
-                sourceButtons_.reserve(sourceValues_.size());
-                sourceMembers_.reserve(sourceValues_.size());
-                for (const auto &value : sourceValues_)
-                {
-                    auto button = std::make_unique<EuControlSwitch>(this);
-                    Check(button->SetPersistenceID(Wide(value)), "Source persistence");
-                    Check(button->SetAttribute2(kATRIBID_SimpleUserVisibleName, SourceLabel(value)),
-                          "Source name");
-                    InitButton(*button);
-                    NEuCon::uint32 member = 0;
-                    Check(sources_.PushBack(button.get(), member), "Add monitor source");
-                    sourceMembers_.push_back(member);
-                    sourceButtons_.push_back(std::move(button));
-                }
+                Add(talkLevel_, TalkLevel, EuLayoutMonitor::kNAM_TalkbackMicLevel, L"Talk Level");
+                auto &p = Primitive(talkLevel_, EuControlKnob::kID_Knob);
+                const auto values = FaderDbTable(static_cast<float>(*m.talkLevel->minimum),
+                                                 static_cast<float>(*m.talkLevel->maximum));
+                Initialize(p, kTYP_Float, static_cast<NEuCon::uint16>(values.size()));
+                Check(p.LoadValueTable(values, 1), "Talk level table");
+                LoadDbValueText(p, values, values.front(), "Talk level units");
+                p.MakeConfirmationCallback(true);
+                auto *talkRing = dynamic_cast<EuPrimitiveKnob *>(&p);
+                if (!talkRing)
+                    throw std::runtime_error("Missing talk level knob");
+                Check(talkRing->SetPositionRingMode(kRingThermometerLeft), "Talk level ring");
+                RawSwitch(Primitive(talkLevel_, EuControlKnob::kID_KnobTouchSense));
+                Label(Primitive(talkLevel_, EuControlKnob::kID_KnobLabelDisplay), L"Talk");
+                LatchSwitch(Primitive(talkLevel_, EuControlKnob::kID_KnobTopSwitch));
+                Primitive(talkLevel_, EuControlKnob::kID_KnobTopSwitch).MakeConfirmationCallback(true);
             }
+            if (hasMono_)
+            {
+                Add(formats_, Formats, EuLayoutMonitor::kNAM_FolddownFormat, L"Folddown Format");
+                Check(mono_.SetPersistenceID(L"Mono"), "Mono persistence");
+                Check(mono_.SetAttribute2(kATRIBID_SimpleUserVisibleName, tEuString(L"Mono"), false),
+                      "Mono label");
+                InitButton(mono_);
+                Check(formats_.PushBack(&mono_, monoMember_), "Add mono format");
+                monoAdded_ = true;
+            }
+            if (!speakerButtons_.empty())
+            {
+                // Isolated Avid Control compatibility alias: the tested client
+                // leaves Source and Main/ALT blank when SpeakerSelect is empty.
+                // This is one real Main-set action, not fictitious per-speaker
+                // or ALT controls. Keep the native MainSpkrs/AltNSpkrs above.
+                Add(speakerInventory_, SpeakerInventory, EuLayoutMonitor::kNAM_SpeakerSelect,
+                    L"Speaker Select");
+                Check(mainSpeakerAlias_.SetAttribute2(kATRIBID_SimpleUserVisibleName,
+                                                     tEuString(L"Main"), false), "Main alias name");
+                Check(mainSpeakerAlias_.SetPersistenceID(L"Main"), "Main alias persistence");
+                Check(speakerInventory_.PushBack(&mainSpeakerAlias_, mainSpeakerMember_),
+                      "Add Main speaker alias");
+                mainSpeakerAdded_ = true;
+                InitSourceButton(mainSpeakerAlias_, m.speakerSelection->value.Number() == 0 ? 1 : 0);
+                Primitive(mainSpeakerAlias_, EuControlSwitch::kID_Switch).MakeConfirmationCallback(true);
+            }
+            Log("monitor-model sources=" + std::to_string(sourceValues_.size()) +
+                " speakerSets=" + std::to_string(speakerButtons_.size()) +
+                " mainSpeakerAlias=" + std::to_string(mainSpeakerAdded_) +
+                " talkLevel=" + std::to_string(hasTalkLevel_));
             Apply(m);
+            const auto inspection = ApolloBridge::InspectMonitorModel(*this);
+            const int bytes = WideCharToMultiByte(CP_UTF8, 0, inspection.data(),
+                                                  static_cast<int>(inspection.size()), nullptr, 0,
+                                                  nullptr, nullptr);
+            std::string utf8(bytes, '\0');
+            WideCharToMultiByte(CP_UTF8, 0, inspection.data(), static_cast<int>(inspection.size()),
+                                utf8.data(), bytes, nullptr, nullptr);
+            Log("monitor-sdk-model\n" + utf8);
         }
         catch (...)
         {
@@ -550,10 +668,87 @@ class ControlRoom final : public EuProcessor
     {
         return tag_;
     }
+    bool ModelForTest()
+    {
+        const auto switchMode = [](EuControlSwitch &control, tSWITCH expected) {
+            auto &primitive = Primitive(control, EuControlSwitch::kID_Switch);
+            auto *button = dynamic_cast<EuPrimitiveSwitch *>(&primitive);
+            tSWITCH actual = kSWITCH_NumSwitchmodes;
+            return button && button->GetSwitchMode(actual) == kERR_OK && actual == expected;
+        };
+        std::vector<EuControl *> sources;
+        NEuCon::int32 sourceLayout = 0, sourceOrder = 0;
+        if (sources_.GetAttribute(kATRIBID_LayoutName0, sourceLayout) != kERR_OK ||
+            sourceLayout != EuLayoutMonitor::kNAM_ControlRoomSource ||
+            sources_.GetAttribute(kATRIBID_DoNotSort, sourceOrder) != kERR_OK || sourceOrder != 1 ||
+            sources_.GetContainedControls(sources) != kERR_OK || sources.size() != sourceValues_.size())
+            return false;
+        for (size_t i = 0; i < sourceMembers_.size(); ++i)
+        {
+            tEuString visibleName;
+            if (sourceButtons_[i]->GetAttribute(kATRIBID_SimpleUserVisibleName, visibleName) != kERR_OK ||
+                visibleName != SourceLabel(sourceValues_[i]) ||
+                Slot(Sources, sourceMembers_[i], EuControlSwitch::kID_Switch) != 6 + i ||
+                !switchMode(*sourceButtons_[i], kSWITCH_MultiState))
+                return false;
+        }
+        NEuCon::int32 sourceModeLayout = 0;
+        NEuCon::uint16 sourceModeIndex = 1;
+        if (sourceSum_.GetAttribute(kATRIBID_LayoutName0, sourceModeLayout) != kERR_OK ||
+            sourceModeLayout != EuLayoutMonitor::kNAM_SourceSum ||
+            Primitive(sourceSum_, EuControlSwitch::kID_Switch).GetCurrentIndex(sourceModeIndex) != kERR_OK ||
+            sourceModeIndex != 0 || !switchMode(sourceSum_, kSWITCH_MomentaryLatch))
+            return false;
+        for (size_t i = 0; i < speakerButtons_.size(); ++i)
+        {
+            NEuCon::int32 layout = 0;
+            const int expected[] = {EuLayoutMonitor::kNAM_MainSpkrs, EuLayoutMonitor::kNAM_Alt1Spkrs,
+                                     EuLayoutMonitor::kNAM_Alt2Spkrs};
+            if (speakerButtons_[i]->GetAttribute(kATRIBID_LayoutName0, layout) != kERR_OK ||
+                layout != expected[i] || Slot(MainSpeakers + static_cast<NEuCon::uint32>(i), 0,
+                                               EuControlSwitch::kID_Switch) != 12 + i ||
+                !switchMode(*speakerButtons_[i], kSWITCH_MomentaryLatch))
+                return false;
+        }
+        if (mainSpeakerAdded_)
+        {
+            std::vector<EuControl *> speakers;
+            NEuCon::int32 layout = 0;
+            tEuString name;
+            NEuCon::uint16 aliasIndex = 0, mainIndex = 0;
+            if (speakerInventory_.GetAttribute(kATRIBID_LayoutName0, layout) != kERR_OK ||
+                layout != EuLayoutMonitor::kNAM_SpeakerSelect ||
+                speakerInventory_.GetContainedControls(speakers) != kERR_OK ||
+                speakers.size() != 1 || speakers.front() != &mainSpeakerAlias_ ||
+                mainSpeakerAlias_.GetAttribute(kATRIBID_SimpleUserVisibleName, name) != kERR_OK ||
+                name != L"Main" || !switchMode(mainSpeakerAlias_, kSWITCH_MultiState) ||
+                Slot(SpeakerInventory, mainSpeakerMember_, EuControlSwitch::kID_Switch) != 12 ||
+                Primitive(mainSpeakerAlias_, EuControlSwitch::kID_Switch).GetCurrentIndex(aliasIndex) != kERR_OK ||
+                Primitive(*speakerButtons_.front(), EuControlSwitch::kID_Switch).GetCurrentIndex(mainIndex) != kERR_OK ||
+                aliasIndex != mainIndex)
+                return false;
+        }
+        if (hasTalkLevel_)
+        {
+            auto &primitive = Primitive(talkLevel_, EuControlKnob::kID_Knob);
+            auto *knob = dynamic_cast<EuPrimitiveKnob *>(&primitive);
+            tRING ring = kRingModeInvalid;
+            if (Slot(TalkLevel, 0, EuControlKnob::kID_Knob) != 11 ||
+                Slot(TalkLevel, 0, EuControlKnob::kID_KnobTopSwitch) != 5 || !knob ||
+                knob->GetPositionRingMode(ring) != kERR_OK || ring != kRingThermometerLeft)
+                return false;
+        }
+        return !hasTalk_ || switchMode(talk_, kSWITCH_MomentaryLatch);
+    }
     void OnConfirmValueCallback(NEuCon::uint32, NEuCon::uint32 control, NEuCon::uint32 member,
                                 NEuCon::uint32 primitive, EuPrimitiveControl *,
                                 NEuCon::uint16 &index) override
     {
+        if (control == SourceSum && primitive == EuControlSwitch::kID_Switch)
+        {
+            index = 0;
+            return;
+        }
         const int slot = Slot(control, member, primitive);
         if (slot < 0)
             return;
@@ -562,7 +757,7 @@ class ControlRoom final : public EuProcessor
             index = feedback_[slot].load();
         else if (slot == 0)
             index = std::min(index, ceilingIndex_.load());
-        else if (slot >= 6)
+        else if ((slot >= 6 && slot <= 10) || slot >= 12)
             index = 1; // A monitor source is selected, never toggled to no source.
         else if (slot == 5 && talkToMonitor_.load() && index)
             index = feedback_[slot].load();
@@ -573,6 +768,8 @@ class ControlRoom final : public EuProcessor
     {
         if (type != kEVT_PRIM_StateChange || (flags & kPRIMITIVE_FORCE_UPDATE))
             return;
+        if (control == SourceSum)
+            return;
         if (control == Level && primitive == EuControlKnob::kID_KnobTouchSense)
         {
             touched_ = index != 0;
@@ -581,6 +778,11 @@ class ControlRoom final : public EuProcessor
         if (control == DimAmount && primitive == EuControlKnob::kID_KnobTouchSense)
         {
             dimTouched_ = index != 0;
+            return;
+        }
+        if (control == TalkLevel && primitive == EuControlKnob::kID_KnobTouchSense)
+        {
+            talkTouched_ = index != 0;
             return;
         }
         const int slot = Slot(control, member, primitive);
@@ -598,7 +800,7 @@ class ControlRoom final : public EuProcessor
         event.thread = GetCurrentThreadId();
         event.epoch = controller_.Epoch();
         event.at = std::chrono::steady_clock::now();
-        if (slot == 0 || slot == 4)
+        if (slot == 0 || slot == 4 || slot == 11)
         {
             float value = 0;
             event.decodeResult = affected->GetValueAt(index, value);
@@ -622,6 +824,11 @@ class ControlRoom final : public EuProcessor
         const int slot = Slot(event.control, event.member, event.primitive);
         if (slot < 0)
             return false;
+        if (slot == 11)
+            return controller_.Submit(target_.key, MonitorField::TalkLevel, ControlNumber(event.value), event.epoch);
+        if (slot >= 12)
+            return event.value && controller_.Submit(target_.key, MonitorField::Speakers,
+                                                      ControlNumber(slot - 12), event.epoch);
         if (slot >= 6)
         {
             if (!event.value || static_cast<size_t>(slot - 6) >= sourceValues_.size())
@@ -695,32 +902,76 @@ class ControlRoom final : public EuProcessor
         }
         for (size_t i = 0; i < sourceButtons_.size(); ++i)
         {
-            Parameter state;
-            state.value = Json::Parse(m.source == sourceValues_[i] ? "true" : "false");
-            feedback_[6 + i] = state.value.Bool() ? 1 : 0;
-            ToggleFeedback(*sourceButtons_[i], EuControlSwitch::kID_Switch, EuControlSwitch::kID_Led, state);
+            feedback_[6 + i] = m.source == sourceValues_[i] ? 1 : 0;
+            ApplySelectionFeedback(*sourceButtons_[i], feedback_[6 + i].load());
         }
+        if (hasTalkLevel_)
+        {
+            auto &p = Primitive(talkLevel_, EuControlKnob::kID_Knob);
+            Check(p.GetIndexForValue(static_cast<float>(m.talkLevel->value.Number()), current), "Talk level index");
+            feedback_[11] = current;
+            if (!talkTouched_ || !status.epoch)
+                Check(p.SetCurrentIndex(current), "Talk level feedback");
+            Check(Primitive(talkLevel_, EuControlKnob::kID_KnobTopSwitch).SetCurrentIndex(feedback_[5].load()),
+                  "Talk knob switch feedback");
+        }
+        for (size_t i = 0; i < speakerButtons_.size(); ++i)
+        {
+            feedback_[12 + i] = m.speakerSelection->value.Number() == i ? 1 : 0;
+            ApplySelectionFeedback(*speakerButtons_[i], feedback_[12 + i].load());
+        }
+        if (mainSpeakerAdded_)
+            ApplySelectionFeedback(mainSpeakerAlias_, feedback_[12].load());
     }
 
   private:
+    static void ApplySelectionFeedback(EuControlSwitch &button, NEuCon::uint16 index)
+    {
+        // Read actual SDK state, not a cached last-sent value: a surface may
+        // have changed the switch since our previous update. Reconcile any
+        // real change immediately, without re-sending identical selection
+        // and LED states on every unrelated channel or meter observation.
+        auto &primitive = Primitive(button, EuControlSwitch::kID_Switch);
+        NEuCon::uint16 current = 0, led = 0;
+        Check(primitive.GetCurrentIndex(current), "Monitor selection readback");
+        Check(Primitive(button, EuControlSwitch::kID_Led).GetCurrentIndex(led),
+              "Monitor selection LED readback");
+        if (current != index || led != index)
+            Check(primitive.SetCurrentIndex(index), "Monitor selection feedback");
+    }
     enum : NEuCon::uint32
     {
-        Level = 1,
-        Mute,
-        Dim,
-        Formats,
-        DimAmount,
-        Talk,
-        Sources
+        // Local callback IDs retained across diagnostic candidates. These IDs
+        // do not replace the documented monitor layout names.
+        Level = 0,
+        Sources = 1,
+        SourceSum = 2,
+        Mute = 3,
+        Dim = 4,
+        MainSpeakers = 5,
+        DimAmount = 8,
+        Talk = 25,
+        TalkLevel = 26,
+        Formats = 27,
+        SpeakerInventory = 28
     };
     int Slot(NEuCon::uint32 control, NEuCon::uint32 member, NEuCon::uint32 primitive) const
     {
+        if (control == TalkLevel && hasTalkLevel_)
+        {
+            if (primitive == EuControlKnob::kID_Knob) return 11;
+            if (primitive == EuControlKnob::kID_KnobTopSwitch) return 5;
+        }
         if (control == Level && primitive == EuControlKnob::kID_Knob)
             return 0;
         if (control == DimAmount && hasDimAmount_ && primitive == EuControlKnob::kID_Knob)
             return 4;
         if (primitive != EuControlSwitch::kID_Switch)
             return -1;
+        if (control == SpeakerInventory && mainSpeakerAdded_ && member == mainSpeakerMember_)
+            return 12;
+        if (control >= MainSpeakers && control < MainSpeakers + speakerButtons_.size())
+            return 12 + static_cast<int>(control - MainSpeakers);
         if (control == Mute && hasMute_)
             return 1;
         if (control == Dim && hasDim_)
@@ -745,9 +996,11 @@ class ControlRoom final : public EuProcessor
     void Add(EuControl &control, NEuCon::uint32 id, int layout, const wchar_t *name)
     {
         Check(control.SetId(id), "Monitor control ID");
-        Check(control.SetPersistenceID(name), "Monitor control persistence");
-        Check(control.SetAttribute2(kATRIBID_LayoutName0, layout), "Monitor control layout");
-        Check(control.SetAttribute2(kATRIBID_SimpleUserVisibleName, name), "Monitor control name");
+        Check(control.SetPersistenceID(L"Apollo.ControlRoom." + std::to_wstring(id)),
+              "Monitor control persistence");
+        Check(control.SetAttribute2(kATRIBID_LayoutName0, layout, false), "Monitor control layout");
+        Check(control.SetAttribute2(kATRIBID_SimpleUserVisibleName, tEuString(name), false),
+              "Monitor control name");
         Check(AddControl(control), "Add monitor control");
         controls_.push_back(&control);
     }
@@ -765,9 +1018,36 @@ class ControlRoom final : public EuProcessor
               "Monitor LED table");
         Check(button.SetLedOverride(true), "Monitor LED ownership");
     }
+    void InitSourceButton(EuControlSwitch &button, NEuCon::uint16 initialIndex)
+    {
+        // Match EuConIO's AddSourceSwitch contract without the generic
+        // OnlySendIfDifferent wrapper used by ordinary controls.
+        auto &primitive = Primitive(button, EuControlSwitch::kID_Switch);
+        Check(primitive.Initialize(kTYP_Int, 2), "Monitor source switch initialize");
+        Check(primitive.LoadValueTableInterpolated(0, 1), "Monitor source switch table");
+        auto *sourceSwitch = dynamic_cast<EuPrimitiveSwitch *>(&primitive);
+        if (!sourceSwitch)
+            throw std::runtime_error("Missing monitor source switch primitive");
+        Check(sourceSwitch->SetSwitchMode(kSWITCH_MultiState), "Monitor source switch mode");
+        Check(primitive.SetCurrentIndex(initialIndex), "Monitor source initial state");
+    }
+    void InitSpeakerButton(EuControlSwitch &button)
+    {
+        // Match EuConIO's direct monitor-switch initialization. These are
+        // layout controls, not named/persisted soft keys.
+        auto &primitive = Primitive(button, EuControlSwitch::kID_Switch);
+        Check(primitive.Initialize(kTYP_Int, 2), "Monitor speaker switch initialize");
+        Check(primitive.LoadValueTableInterpolated(0, 1), "Monitor speaker switch table");
+        auto *speakerSwitch = dynamic_cast<EuPrimitiveSwitch *>(&primitive);
+        if (!speakerSwitch)
+            throw std::runtime_error("Missing monitor speaker switch primitive");
+        Check(speakerSwitch->SetSwitchMode(kSWITCH_MomentaryLatch), "Monitor speaker switch mode");
+    }
     void Detach() noexcept
     {
         SetIsBeingDestroyed();
+        if (mainSpeakerAdded_)
+            CleanupResult(speakerInventory_.Remove(mainSpeakerMember_), "Remove Main speaker alias");
         if (monoAdded_)
             CleanupResult(formats_.Remove(monoMember_), "Remove mono format");
         for (auto member : sourceMembers_)
@@ -786,6 +1066,15 @@ class ControlRoom final : public EuProcessor
     EuControlKnob dimAmount_;
     EuControlSwitch talk_;
     EuControlSwitchArray sources_;
+    EuControlSwitch sourceSum_;
+    EuControlKnob talkLevel_;
+    EuControlSwitchArray speakerInventory_;
+    EuControlSwitch mainSpeakerAlias_;
+    NEuCon::uint32 mainSpeakerMember_ = 0;
+    bool mainSpeakerAdded_ = false;
+    std::vector<std::unique_ptr<EuControlSwitch>> speakerButtons_;
+    bool hasTalkLevel_ = false;
+    std::atomic<bool> talkTouched_ = false;
     std::vector<std::string> sourceValues_;
     std::string lastSource_;
     std::vector<std::unique_ptr<EuControlSwitch>> sourceButtons_;
@@ -798,7 +1087,7 @@ class ControlRoom final : public EuProcessor
     std::vector<float> table_;
     std::atomic<bool> touched_ = false;
     std::atomic<bool> dimTouched_ = false, talkToMonitor_ = false;
-    std::atomic<NEuCon::uint16> feedback_[11]{};
+    std::atomic<NEuCon::uint16> feedback_[15]{};
     std::atomic<NEuCon::uint16> ceilingIndex_ = 0;
 };
 #include "ConfigKnob.h"
@@ -998,7 +1287,7 @@ class Strip final : public EuProcessor
         else if (affected && control == Pan && primitive == EuControlKnobCell::kID_KnobTopSwitch)
         {
             // OneShot always reads as zero. The callback itself is the action;
-            // member identifies the active mono/left/right pan peer.
+            // the independent array member identifies the mono/left/right side.
             event.decodeResult = kERR_OK;
             event.value = 0;
             event.decoded = true;
@@ -1148,9 +1437,24 @@ class Strip final : public EuProcessor
     bool ConfigValueForTest(const std::string &key, const std::wstring &expected) const
     { return knobs_.ConfigValueForTest(key, expected); }
     bool RingModesForTest() const
-    { return knobs_.RingModesForTest() && monitorKnobs_.RingModesForTest(); }
-    bool PanResetSwitchesForTest() const
     {
+        return knobs_.RingModesForTest() && monitorKnobs_.RingModesForTest() &&
+               monitorKnobs_.SwitchModesForTest();
+    }
+    bool PanResetSwitchesForTest()
+    {
+        std::vector<EuControl *> members;
+        EuControlKnobCellArray::tKNOBCELLORDER order =
+            EuControlKnobCellArray::kKNOBCELLORDER_Bottom_Up;
+        if (pan_.GetContainedControls(members) != kERR_OK ||
+            pan_.GetKnobCellOrder(order) != kERR_OK ||
+            order != EuControlKnobCellArray::kKNOBCELLORDER_Top_Down ||
+            members.size() != panCells_.size())
+            return false;
+        if ((panMask_ & 3) == 3 &&
+            (members.size() != 2 || members[0] != panCellsBySide_[1] ||
+             members[1] != panCellsBySide_[0]))
+            return false;
         for (const auto &cell : panCells_)
         {
             auto &primitive = Primitive(*cell, EuControlKnobCell::kID_KnobTopSwitch);
@@ -1163,6 +1467,12 @@ class Strip final : public EuProcessor
         }
         return panCells_.size() ==
                static_cast<size_t>((panMask_ & 1 ? 1 : 0) + (panMask_ & 2 ? 1 : 0));
+    }
+    NEuCon::int32 TrackFormatForTest() const
+    {
+        NEuCon::int32 value = 0;
+        Check(GetAttribute(kATRIBID_TrackFormat, value), "Track format test readback");
+        return value;
     }
     NEuCon::uint16 RecIndexForTest()
     {
@@ -1192,7 +1502,8 @@ class Strip final : public EuProcessor
         handle_ = event.visible ? event.handle : kEuInvalidVisibilityHandle;
         meterFormat_ = event.format;
     }
-    void Apply(const Channel &channel, int order, bool registered = true)
+    void Apply(const Channel &channel, int order, bool registered = true,
+               bool advancedPanner = false)
     {
         if (order < 0)
             order = order_;
@@ -1274,29 +1585,36 @@ class Strip final : public EuProcessor
         }
         if (panMask_ == (channel.pan ? 1 : 0) + (channel.panRight ? 2 : 0) && panStereo_ == channel.stereo)
         {
-            size_t cell = 0;
-            for (const auto *parameter : {&channel.pan, &channel.panRight})
-                if (*parameter)
+            const std::array<const std::optional<Parameter> *, 2> parameters{&channel.pan,
+                                                                            &channel.panRight};
+            for (size_t side = 0; side < parameters.size(); ++side)
+                if (*parameters[side] && panCellsBySide_[side])
                 {
-                    const bool touch = parameter == &channel.pan ? leftTouched_.load() : rightTouched_.load();
+                    const bool touch = side == 0 ? leftTouched_.load() : rightTouched_.load();
                     if (!touch)
-                        Check(Primitive(*panCells_[cell], EuControlKnobCell::kID_Knob)
-                                  .SetCurrentValue(static_cast<float>((*parameter)->value.Number() * 100)),
+                        Check(Primitive(*panCellsBySide_[side], EuControlKnobCell::kID_Knob)
+                                  .SetCurrentValue(
+                                      static_cast<float>((*parameters[side])->value.Number() * 100)),
                               "Pan feedback");
-                    ++cell;
                 }
         }
-        if (!formatReady_ || stereo_ != channel.stereo || outputFormat_ != channel.outputFormat)
+        if (!formatReady_ || stereo_ != channel.stereo || outputFormat_ != channel.outputFormat ||
+            advancedPanner_ != advancedPanner)
         {
             Check(SetAttribute2(kATRIBID_ChannelFormat, channel.stereo ? L"Stereo" : L"Mono", true),
                   "Channel format");
-            const auto output =
+            const NEuCon::uint32 output =
                 channel.outputFormat == AudioFormat::Stereo
                     ? kFORMAT_Stereo
                     : (channel.outputFormat == AudioFormat::Mono ? kFORMAT_Mono : kFORMAT_Unknown);
-            Check(SetAttribute2(kATRIBID_TrackFormat, output, true), "Output track format");
+            const NEuCon::uint32 published =
+                advancedPanner && output != kFORMAT_Unknown
+                    ? EuMakeTrackFormatWithConfig(output, kFORMATCONFIG_Standard)
+                    : output;
+            Check(SetAttribute2(kATRIBID_TrackFormat, published, true), "Output track format");
             UpdateText(Primitive(format_, 0), channel.stereo ? L"Stereo" : L"Mono", "Format display");
             outputFormat_ = channel.outputFormat;
+            advancedPanner_ = advancedPanner;
             formatReady_ = true;
         }
         if (registered && (!meterReady_ || stereo_ != channel.stereo))
@@ -1403,6 +1721,8 @@ class Strip final : public EuProcessor
             }
             Add(pan_, Pan, EuLayoutChannel::kNAM_Pan, L"Pan");
             Check(pan_.SetAttribute2(kATRIBID_FuncPersID, L"Avid.Chan.Pan"), "Pan function");
+            Check(pan_.SetKnobCellOrder(EuControlKnobCellArray::kKNOBCELLORDER_Top_Down),
+                  "Pan display order");
             panAdded_ = true;
         }
         Check(pan_.Freeze(), "Pan freeze");
@@ -1412,9 +1732,14 @@ class Strip final : public EuProcessor
                 Check(pan_.Remove(*it), "Remove pan cell");
             panIds_.clear();
             panCells_.clear();
+            panCellsBySide_.fill(nullptr);
             leftMember_ = rightMember_ = 0;
-            Check(pan_.SetPeerSubstituteSwitch(EuControlKnobCell::kID_UpperSwitch), "Pan peer selector");
-            for (int index = 0; index < 2; ++index)
+            // Avid Control presents the independent members of the native Pan
+            // array in reverse vertical order. Publish right then left so its
+            // visible top-to-bottom order is Left, Right. Keep side-indexed
+            // pointers below so this presentation compensation cannot swap
+            // either parameter's input or feedback binding.
+            for (const int index : {1, 0})
             {
                 const auto &parameter = index == 0 ? channel.pan : channel.panRight;
                 if (!parameter)
@@ -1427,8 +1752,10 @@ class Strip final : public EuProcessor
                 Check(p.SetAttribute2(kATRIBID_LayoutName1,
                                       index == 0 ? EuLayoutPan::kNAM_LeftPan : EuLayoutPan::kNAM_RightPan),
                       "Native pan semantic");
-                RawSwitch(Primitive(*knob, EuControlKnobCell::kID_KnobTouchSense));
-                OneShotSwitch(Primitive(*knob, EuControlKnobCell::kID_KnobTopSwitch));
+                auto &touch = Primitive(*knob, EuControlKnobCell::kID_KnobTouchSense);
+                auto &top = Primitive(*knob, EuControlKnobCell::kID_KnobTopSwitch);
+                RawSwitch(touch);
+                OneShotSwitch(top);
                 auto *rotary = dynamic_cast<EuPrimitiveKnob *>(&p);
                 if (!rotary)
                     throw std::runtime_error("Missing rotary primitive");
@@ -1441,18 +1768,14 @@ class Strip final : public EuProcessor
                 }
                 Label(Primitive(*knob, EuControlKnobCell::kID_KnobLabelDisplay),
                       channel.stereo ? (index == 0 ? L"Pan L" : L"Pan R") : L"Pan");
-                if (channel.pan && channel.panRight)
-                    Switch(Primitive(*knob, EuControlKnobCell::kID_UpperSwitch));
                 NEuCon::uint32 member = 0;
-                if (index == 1 && channel.pan)
-                    Check(pan_.AddPeerKnobCell(panIds_.front(), knob.get(), member), "Add right pan peer");
-                else
-                    Check(pan_.PushBack(knob.get(), member), "Add pan cell");
+                Check(pan_.PushBack(knob.get(), member), "Add pan cell");
                 panIds_.push_back(member);
                 if (index == 0)
                     leftMember_ = member;
                 else
                     rightMember_ = member;
+                panCellsBySide_[index] = knob.get();
                 panCells_.push_back(std::move(knob));
             }
             panMask_ = (channel.pan ? 1 : 0) + (channel.panRight ? 2 : 0);
@@ -1485,6 +1808,7 @@ class Strip final : public EuProcessor
     std::atomic<uint64_t> configEpoch_{0};
     std::string lastOutput_, lastInput_;
     std::vector<std::unique_ptr<EuControlKnobCell>> panCells_;
+    std::array<EuControlKnobCell *, 2> panCellsBySide_{};
     std::vector<NEuCon::uint32> panIds_;
     std::vector<EuControl *> controls_;
     bool hasLevel_ = false, hasMute_ = false, hasSolo_ = false, hasRec_ = false, panAdded_ = false;
@@ -1493,6 +1817,7 @@ class Strip final : public EuProcessor
     ULONGLONG nextMeterTrace_ = 0;
     unsigned meterTraces_ = 0;
     bool panStereo_ = false;
+    bool advancedPanner_ = false;
     std::optional<double> levelMinimum_, levelMaximum_;
     std::string lastName_;
     tVisibilityHandle handle_ = kEuInvalidVisibilityHandle;
@@ -1510,6 +1835,7 @@ struct ApolloEucon::Impl
     bool manager = false, registered = false;
     int nextTag = 1;
     uint64_t eventCount = 0;
+    NEuCon::uint32 surfaceFeatures = 0;
     FeedbackUpdatePolicy refreshPolicy;
     ChannelController &controller;
     MonitorController &monitorController;
@@ -1526,6 +1852,11 @@ struct ApolloEucon::Impl
             manager = true;
             Log(std::string("experimental-config=") + (config ? "1 separately-confirmed-writes=1" : "0"));
             node = std::make_unique<Node>(inbox);
+            Check(node->SetAttribute2(kATRIBID_SupportedProcessorFeatures,
+                                      kSupportsNumberOfChildrenAttribute |
+                                          kSupportsAdvancedPannerControls,
+                                      false),
+                  "Processor features");
             Check(node->Freeze(), "Initial node freeze");
             Check(node->SetPersistenceID(L"Lindelea.ApolloBridge.EUCON.v1"), "Node persistence");
             Check(node->SetSimpleFriendlyName(L"UAD Console Bridge for EUCON"), "Node friendly name");
@@ -1600,7 +1931,8 @@ struct ApolloEucon::Impl
             strips.erase(inserted.first);
             throw;
         }
-        ptr->Apply(channel, order);
+        ptr->Apply(channel, order, true,
+                   (surfaceFeatures & kSupportsAdvancedPannerHandling) != 0);
         Log("track registered tag=" + std::to_string(ptr->Tag()) + " order=" + std::to_string(order));
     }
     void Apply(const Snapshot &state)
@@ -1646,6 +1978,13 @@ struct ApolloEucon::Impl
                 queued = bridge::RequestSummon(static_cast<bridge::Application>(event.type));
             if (event.kind == Event::Kind::MonitorPrimitive && controlRoom)
                 queued = controlRoom->Dispatch(event);
+            if (event.kind == Event::Kind::SurfaceFeatures)
+            {
+                surfaceFeatures = event.flags;
+                Log("surface-features value=" + std::to_string(surfaceFeatures) +
+                    " advanced-panner=" +
+                    std::to_string((surfaceFeatures & kSupportsAdvancedPannerHandling) != 0));
+            }
             if (event.kind == Event::Kind::Primitive)
                 for (const auto &c : channels)
                 {
@@ -1661,6 +2000,16 @@ struct ApolloEucon::Impl
             {
                 Log("network error callback-thread=" + std::to_string(event.thread));
                 throw std::runtime_error("EUCON network error; see diagnostic log");
+            }
+            if (event.kind == Event::Kind::Surface &&
+                (event.type == kEVT_NODE_SurfaceNodeAdded ||
+                 event.type == kEVT_NODE_SurfaceNodeRemoved))
+            {
+                NEuCon::int32 features = 0;
+                const auto result = node->GetAttribute(kATRIBID_SupportedSurfaceFeatures, features);
+                surfaceFeatures = result == kERR_OK ? static_cast<NEuCon::uint32>(features) : 0;
+                Log("surface-features readback=" + std::to_string(result) +
+                    " value=" + std::to_string(surfaceFeatures));
             }
             if (event.kind == Event::Kind::Visibility)
             {
@@ -1758,7 +2107,8 @@ struct ApolloEucon::Impl
             if (it != strips.end())
             {
                 it->second->SetEpoch(controller.Epoch(c.key));
-                it->second->Apply(controller.Feedback(c), topology && touched ? -1 : order);
+                it->second->Apply(controller.Feedback(c), topology && touched ? -1 : order, true,
+                                  (surfaceFeatures & kSupportsAdvancedPannerHandling) != 0);
                 it->second->ApplyGlobalConfig(state, configuration ? configuration->Epoch() : 0);
                 it->second->ApplyMonitor(
                     monitor ? std::optional<Monitor>(monitorController.Feedback(*monitor)) : std::nullopt,
@@ -1822,6 +2172,85 @@ size_t ApolloEucon::VisibleMeters() const
     return std::count_if(impl_->strips.begin(), impl_->strips.end(),
                          [](const auto &p) { return p.second->Visible(); });
 }
+void RunEuconMonitorProbe()
+{
+    Check(EuConManager::Initialize(), "Monitor probe SDK initialize");
+    struct SdkLifetime
+    {
+        ~SdkLifetime() { CleanupResult(EuConManager::Destroy(), "Monitor probe SDK destroy"); }
+    } sdkLifetime;
+    {
+        // No Observer::Start, controller Arm or event Dispatch exists in this
+        // mode. The fixture is the same model used in the SDK regression test.
+        Observer offline;
+        MonitorController locked(offline);
+        Inbox inbox;
+        Node node(inbox);
+        std::unique_ptr<ControlRoom> room;
+        bool attached = false, registered = false;
+        HWND window = nullptr;
+        const auto cleanup = [&] {
+            if (window && IsWindow(window)) DestroyWindow(window);
+            CleanupResult(node.Freeze(), "Probe cleanup freeze");
+            if (attached) CleanupResult(node.UnregisterProcessor(*room), "Probe remove monitor");
+            room.reset();
+            CleanupResult(node.Thaw(), "Probe cleanup thaw");
+            if (registered) CleanupResult(EuCon::GetInstance().UnregisterNode(node), "Probe remove node");
+        };
+        try
+        {
+            auto fixture = ConsoleFixture();
+            AddMonitorFixture(fixture);
+            const auto model = BuildSnapshot(fixture);
+            Check(node.Freeze(), "Probe initial freeze");
+            Check(node.SetPersistenceID(L"Lindelea.ApolloBridge.EUCON.v1"), "Probe node persistence");
+            Check(node.SetSimpleFriendlyName(L"UAD Console Bridge for EUCON"), "Probe node name");
+            Check(node.SetUserVisibleName(L"UAD Monitor Probe - NO AUDIO WRITES"), "Probe visible name");
+            Check(node.SetAttribute2(kATRIBID_SupportedProcessorFeatures,
+                kSupportsNumberOfChildrenAttribute | kSupportsAdvancedPannerControls), "Probe features");
+            Check(node.SetAttribute2(kATRIBID_ProcessorMeterAPIVersion, kMeterAPIVersion_3_1), "Probe meter API");
+            room = std::make_unique<ControlRoom>(model.monitors.front(), 199, inbox, locked);
+            Check(node.RegisterProcessor(*room), "Probe add monitor");
+            attached = true;
+            Check(node.Thaw(), "Probe initial thaw");
+            Check(EuCon::GetInstance().RegisterNode(&node), "Probe register node");
+            registered = true;
+            Log("monitor-only-probe registered; synthetic fixture; no UA connection or writes");
+            WNDCLASSW wc{};
+            wc.hInstance = GetModuleHandleW(nullptr);
+            wc.lpszClassName = L"ApolloMonitorModelProbe";
+            wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+            wc.lpfnWndProc = [](HWND hwnd, UINT message, WPARAM w, LPARAM l) -> LRESULT {
+                if (message == WM_DESTROY) { PostQuitMessage(0); return 0; }
+                return DefWindowProcW(hwnd, message, w, l);
+            };
+            if (!RegisterClassW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS)
+                throw std::runtime_error("Monitor probe window class failed");
+            window = CreateWindowW(wc.lpszClassName, L"UAD Monitor Model Probe - NO AUDIO WRITES",
+                WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 680, 220,
+                nullptr, nullptr, wc.hInstance, nullptr);
+            if (!window) throw std::runtime_error("Monitor probe window failed");
+            CreateWindowW(L"STATIC", L"Monitor-only diagnostic\nSynthetic Mix / Cue 1-4 and Main / ALT controls.\nNo real audio is controlled. Close this window to finish.",
+                WS_CHILD | WS_VISIBLE, 20, 25, 620, 100, window, nullptr, wc.hInstance, nullptr);
+            ShowWindow(window, SW_SHOW);
+            SetForegroundWindow(window);
+            MSG message{};
+            while (GetMessageW(&message, nullptr, 0, 0) > 0)
+            {
+                TranslateMessage(&message);
+                DispatchMessageW(&message);
+                inbox.Take(); // Discard all surface input, never dispatch it.
+            }
+            cleanup();
+        }
+        catch (...)
+        {
+            cleanup();
+            throw;
+        }
+    }
+}
+
 std::string RunEuconTextTests()
 {
     Check(EuConManager::Initialize(), "Text test SDK initialize");
@@ -1958,6 +2387,18 @@ std::string RunEuconTextTests()
         // without registering any application or accessing an audio engine.
         Inbox testInbox;
         Node testNode(testInbox);
+        Check(testNode.SetAttribute2(kATRIBID_SupportedProcessorFeatures,
+                                     kSupportsNumberOfChildrenAttribute |
+                                         kSupportsAdvancedPannerControls,
+                                     false),
+              "Test processor features");
+        NEuCon::int32 processorFeatures = 0;
+        Check(testNode.GetAttribute(kATRIBID_SupportedProcessorFeatures, processorFeatures),
+              "Test processor features readback");
+        if (processorFeatures !=
+            (kSupportsNumberOfChildrenAttribute | kSupportsAdvancedPannerControls))
+            throw std::runtime_error("Processor feature advertisement is incomplete");
+        ++checks;
         {
             ApplicationCommands commands(testInbox);
             Check(testNode.Freeze(), "Command model freeze");
@@ -1969,6 +2410,24 @@ std::string RunEuconTextTests()
         auto fixture = ConsoleFixture();
         AddMonitorFixture(fixture);
         const auto model = BuildSnapshot(fixture);
+        {
+            Observer offline;
+            MonitorController locked(offline);
+            ControlRoom room(model.monitors.front(), 199, testInbox, locked);
+            if (!room.ModelForTest())
+                throw std::runtime_error("Native monitor sources, speakers or talk controls are incomplete");
+            auto alt = model.monitors.front();
+            alt.speakerSelection->value = ControlNumber(1);
+            if (!room.Matches(alt))
+                throw std::runtime_error("ALT1 selection replaced the native monitor model");
+            room.Apply(alt);
+            if (!room.ModelForTest())
+                throw std::runtime_error("Main compatibility alias diverged from native ALT feedback");
+            room.Apply(model.monitors.front());
+            if (!room.ModelForTest())
+                throw std::runtime_error("Main compatibility alias failed main feedback restoration");
+            checks += 4;
+        }
         int tag = 200;
         for (const bool config : {false, true})
         for (auto channel : model.channels)
@@ -1991,6 +2450,18 @@ std::string RunEuconTextTests()
             std::unique_ptr<Strip, decltype(detach)> membership(&strip, detach);
             Check(testNode.Thaw(), "Model test membership thaw");
             strip.Apply(channel, tag, false);
+            if (channel.outputFormat != AudioFormat::Unknown)
+            {
+                strip.Apply(channel, tag, false, true);
+                const auto base = channel.outputFormat == AudioFormat::Stereo ? kFORMAT_Stereo : kFORMAT_Mono;
+                if (strip.TrackFormatForTest() !=
+                    static_cast<NEuCon::int32>(EuMakeTrackFormatWithConfig(base, kFORMATCONFIG_Standard)))
+                    throw std::runtime_error("Advanced Standard panner format was not published");
+                strip.Apply(channel, tag, false, false);
+                if (strip.TrackFormatForTest() != base)
+                    throw std::runtime_error("Legacy panner format retained unsupported config bits");
+                checks += 2;
+            }
             if (!strip.RingModesForTest())
                 throw std::runtime_error("Channel knob ring mode does not match its control semantics");
             ++checks;
