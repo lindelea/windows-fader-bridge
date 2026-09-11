@@ -45,6 +45,10 @@ class Engine
     std::atomic<bool> allowWrites = false, rejectWrites = false, wrongReadback = false, dropAfterSet = false;
     std::atomic<unsigned> writes = 0;
     std::atomic<int> readDelayMs = 0;
+    std::atomic<int> rejectReplyDelayMs = 0;
+    std::atomic<unsigned> subscriptionRevision = 0;
+    std::atomic<bool> streamFaders = false;
+    std::atomic<int> meterOverride = 999;
     Engine()
     {
         WSADATA data{};
@@ -224,9 +228,15 @@ class Engine
     {
         FrameDecoder decoder;
         std::set<std::string> subscribed;
+        auto subscriptionVersion = subscriptionRevision.load();
         int meter = -30;
         while (!stop_)
         {
+            if (subscriptionVersion != subscriptionRevision.load())
+            {
+                subscribed.clear();
+                subscriptionVersion = subscriptionRevision.load();
+            }
             if (drop.exchange(false))
                 return;
             if (Ready(peer))
@@ -284,6 +294,7 @@ class Engine
                         ++writes;
                         if (rejectWrites)
                         {
+                            std::this_thread::sleep_for(std::chrono::milliseconds(rejectReplyDelayMs.load()));
                             Send(peer, "{\"path\":\"" + path + "\",\"error\":\"denied\"}" + '\0');
                             continue;
                         }
@@ -337,10 +348,23 @@ class Engine
                 }
             }
             for (const auto &path : subscribed)
+            {
+                if (streamFaders && path.find("FaderLevel/value") != path.npos)
+                {
+                    std::string value;
+                    {
+                        std::lock_guard<std::mutex> lock(nodesMutex_);
+                        value = Value(path);
+                    }
+                    if (!Send(peer, "{\"path\":\"" + path + "\",\"data\":" + value + "}" + '\0'))
+                        return;
+                }
                 if (path.find("MeterLevel/value") != path.npos)
                     if (!Send(peer,
-                              "{\"path\":\"" + path + "\",\"data\":" + std::to_string(meter) + "}" + '\0'))
+                              "{\"path\":\"" + path + "\",\"data\":" +
+                                  std::to_string(meterOverride == 999 ? meter : meterOverride.load()) + "}" + '\0'))
                         return;
+            }
             if (++meter > -12)
                 meter = -30;
         }
@@ -1186,6 +1210,155 @@ void ConfigurationWrites()
     Check(!engine.badCommand, "Config tests only use synthetic allowlisted fields");
 }
 
+void UnpacedControls()
+{
+    Engine engine;
+    engine.AddMonitor();
+    engine.allowWrites = true;
+    Observer observer(engine.port);
+    observer.Start();
+    Until([&] { return observer.Latest().connected && observer.Latest().monitors.size() == 1; },
+          4000, "Unpaced fixture ready");
+    ChannelController channel(observer, engine.port);
+    MonitorController monitor(observer, engine.port);
+    const auto state = observer.Latest();
+    const auto key = state.channels.front().key;
+    const auto monitorKey = state.monitors.front().key;
+    channel.Arm(key);
+    monitor.Arm(monitorKey);
+    const auto start = Clock::now();
+    for (uint64_t i = 1; i <= 32; ++i)
+    {
+        Check(channel.Submit(key, ChannelField::Level, ControlNumber(-40.0 - i / 10.0), channel.Epoch(key)),
+              "Consecutive channel level accepted");
+        Check(monitor.Submit(monitorKey, MonitorField::Level, ControlNumber(-40.0 - i / 10.0), monitor.Epoch()),
+              "Consecutive monitor level accepted");
+        const auto deadline = Clock::now() + std::chrono::seconds(2);
+        while (channel.Status().confirmed < i || monitor.Status().confirmed < i)
+        {
+            Check(Clock::now() < deadline, "Consecutive commands complete");
+            std::this_thread::yield();
+        }
+    }
+    std::cout << "32 consecutive channel/monitor pairs dispatch-us="
+              << std::chrono::duration_cast<std::chrono::microseconds>(Clock::now() - start).count()
+              << " (synthetic; scheduler dependent).\n";
+    engine.rejectWrites = true;
+    engine.rejectReplyDelayMs = 80;
+    Check(channel.Submit(key, ChannelField::Mute, Json::Parse("true"), channel.Epoch(key)),
+          "Switch sent before delayed channel denial");
+    Check(monitor.Submit(monitorKey, MonitorField::Mute, Json::Parse("true"), monitor.Epoch()),
+          "Switch sent before delayed monitor denial");
+    Until([&] { return !channel.Epoch(key) && !monitor.Epoch(); }, 4000,
+          "Idle nonblocking polling receives delayed switch errors");
+    Check(engine.writes == 66 && !engine.badCommand, "No command replay after delayed denial");
+    observer.Stop();
+}
+
+void MeterNotifications()
+{
+    Engine engine;
+    engine.meterOverride = -12;
+    Observer observer(engine.port);
+    std::atomic<unsigned> notifications = 0;
+    std::atomic<int> latestMeter = 999;
+    std::atomic<long long> publishMaxUs = 0;
+    observer.SetNotification([&] {
+        // Reading inside the callback verifies that Publish released its lock.
+        const auto state = observer.Latest();
+        if (!state.channels.empty() && !state.channels.front().meters.empty())
+        {
+            latestMeter = static_cast<int>(state.channels.front().meters.front().levelDb.value_or(999));
+            const auto elapsed = static_cast<long long>(std::chrono::duration_cast<std::chrono::microseconds>(
+                Clock::now() - state.receivedAt).count());
+            publishMaxUs = std::max(publishMaxUs.load(), elapsed);
+        }
+        ++notifications;
+    });
+    observer.Start();
+    Until([&] { return latestMeter == -12; }, 4000, "Initial meter notification");
+    const auto config = observer.Latest().configuration;
+    const auto controls = observer.Latest().controlRevision;
+    long long maximum = 0;
+    for (int value : {-77, -6, -48, -12, -30, -1})
+    {
+        const auto start = Clock::now();
+        engine.meterOverride = value;
+        Until([&] { return latestMeter == value; }, 1500, "Meter edge reaches notification");
+        maximum = std::max(maximum, static_cast<long long>(
+            std::chrono::duration_cast<std::chrono::microseconds>(Clock::now() - start).count()));
+        Check(observer.Latest().configuration == config,
+              "Meter stream does not rebuild device/plugin configuration");
+        Check(observer.Latest().controlRevision == controls,
+              "Meter changes do not invalidate ordinary EUCON controls");
+    }
+    observer.Stop();
+    Check(notifications >= 7 && !engine.badCommand && engine.writes == 0,
+          "Notifications carry real meter changes without audio writes");
+    std::cout << "Synthetic meter edge to notification max-us=" << maximum
+              << " (includes fixture polling and test sampling; not hardware latency).\n";
+    std::cout << "Observer latest receive to notification max-us=" << publishMaxUs.load() << ".\n";
+
+    Snapshot state;
+    Channel channel;
+    channel.path = "/devices/0/inputs/0";
+    channel.meters.resize(2);
+    state.channels.push_back(channel);
+    Check(ApplyMeterFeedback(state, Json::Parse(R"({"path":"/devices/0/inputs/0/meters/1/MeterLevel/value","data":-12})")) &&
+              !state.channels[0].meters[0].levelDb && state.channels[0].meters[1].levelDb == -12,
+          "Fast meter update preserves stereo leg and native dB");
+    Check(!ApplyMeterFeedback(state, Json::Parse(R"({"path":"/devices/0/inputs/0/FaderLevel/value","data":-6})")),
+          "Non-meter updates use full model path");
+}
+
+void DeviceSubscriptionRecovery()
+{
+    Engine engine;
+    engine.streamFaders = true;
+    engine.allowWrites = true;
+    Observer observer(engine.port);
+    observer.Start();
+    Until([&] { return observer.Latest().connected && !observer.Latest().channels.empty(); },
+          4000, "Recovery fixture connected");
+    const auto initial = observer.Latest();
+    engine.SetProperty("/devices/0", "DeviceHwID", Json::Parse("88888888888888"));
+    ++engine.subscriptionRevision; // Old subscriptions vanish; paths stay identical.
+    observer.Refresh();
+    Until([&] { return observer.Latest().generation > initial.generation; },
+          4000, "Changed device identity renews observation connection");
+    Check(observer.Latest().channels.front().key != initial.channels.front().key,
+          "Replacement device has fresh logical identity");
+    for (int pass = 0; pass < 2; ++pass)
+    {
+        if (pass)
+        {
+            const auto generation = observer.Latest().generation;
+            ++engine.subscriptionRevision; // Same identity, rebuilt engine objects.
+            observer.RenewSubscriptions();
+            Until([&] { return observer.Latest().generation > generation; },
+                  4000, "Explicit control restore renews subscriptions without restart");
+        }
+        ChannelController controller(observer, engine.port);
+        const auto channel = observer.Latest().channels.front();
+        controller.Arm(channel.key);
+        const auto value = -35.0 - pass;
+        Check(controller.Submit(channel.key, ChannelField::Level, ControlNumber(value),
+                                controller.Epoch(channel.key)), "Recovered fader gesture accepted");
+        Until([&] { return observer.Latest().channels.front().level->value.Number() == value; },
+              2000, "Recovered subscription receives actual write feedback");
+        std::this_thread::sleep_for(std::chrono::milliseconds(350));
+        Check(controller.Feedback(observer.Latest().channels.front()).level->value.Number() == value,
+              "Fader does not rebound after optimistic feedback expires");
+        engine.SetProperty(channel.path, "FaderLevel", ControlNumber(-48.0 - pass));
+        Until([&] { return controller.Feedback(observer.Latest().channels.front()).level->value.Number()
+                              == -48.0 - pass; },
+              2000, "External Console adjustment still reaches fader");
+    }
+    observer.Stop();
+    Check(engine.writes == 2 && !engine.badCommand,
+          "Recovery does not replay audio commands");
+}
+
 int main(int argc, char **argv)
 {
     try
@@ -1199,6 +1372,9 @@ int main(int argc, char **argv)
             return 0;
         }
         Transport();
+        UnpacedControls();
+        MeterNotifications();
+        DeviceSubscriptionRecovery();
         Writes();
         FeatureWrites();
         ConsoleWorkflow();

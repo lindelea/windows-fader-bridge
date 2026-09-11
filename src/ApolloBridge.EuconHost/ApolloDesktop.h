@@ -24,7 +24,7 @@ struct DesktopState
 struct DesktopActions
 {
     std::function<std::wstring(const Preferences &, bool startup, bool activate)> save;
-    std::function<void()> connect, disconnect, lock, exit;
+    std::function<void()> connect, disconnect, lock, restart, exit;
 };
 class ApolloDesktop final
 {
@@ -58,6 +58,7 @@ class ApolloDesktop final
     void Act(int id, int code);
     void Paint(HDC);
     void DrawItem(DRAWITEMSTRUCT *);
+    void DrawItemContents(DRAWITEMSTRUCT *);
     void RefreshChannels();
     void DrawChannel(DRAWITEMSTRUCT *);
     std::wstring ChannelAccessibleText(size_t row) const;
@@ -93,6 +94,6 @@ class ApolloDesktop final
     int dpi_ = 96, width_ = 1080, height_ = 720, page_ = 0;
     std::wstring notice_;
     UINT taskbarCreated_ = 0;
-    ULONGLONG lastPaint_ = 0;
+    bool displayFresh_ = false;
 };
 } // namespace apollo

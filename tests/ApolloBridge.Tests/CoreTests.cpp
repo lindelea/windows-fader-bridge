@@ -561,11 +561,37 @@ void MonitorTests()
 #include "PreferencesTests.h"
 #include "DesktopChannelStatusTests.h"
 } // namespace
+#include "FeedbackUpdatePolicy.h"
+void FeedbackPolicyTests()
+{
+    using namespace std::chrono;
+    apollo::FeedbackUpdatePolicy policy;
+    apollo::FeedbackUpdatePolicy::Stamp stamp{};
+    auto now = steady_clock::now();
+    Check(policy.FullUpdate(stamp, false, false, now), "Initial model requires full feedback");
+    now += seconds(1);
+    Check(!policy.FullUpdate(stamp, false, false, now), "Unchanged meter frame skips control work");
+    for (size_t i = 0; i < stamp.size(); ++i)
+    {
+        ++stamp[i];
+        Check(policy.FullUpdate(stamp, false, false, now), "Every control/lifecycle revision invalidates cache immediately");
+        now += seconds(1);
+        Check(!policy.FullUpdate(stamp, false, false, now), "Stable revision returns to meter-only work");
+    }
+    Check(policy.FullUpdate(stamp, true, false, now), "Surface event always receives full dispatch");
+    Check(policy.FullUpdate(stamp, false, false, now + milliseconds(260)),
+          "Feedback expiry beyond 250 ms is still reconciled");
+    now += seconds(1);
+    Check(policy.FullUpdate(stamp, false, true, now), "Pending audio commands keep feedback active");
+    now += seconds(1);
+    Check(!policy.FullUpdate(stamp, false, false, now), "Settled command returns to meter-only work");
+}
 int main()
 {
     try
     {
         JsonTests();
+        FeedbackPolicyTests();
         ProtocolTests();
         ModelTests();
         FaderTests();

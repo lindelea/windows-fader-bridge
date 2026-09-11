@@ -573,6 +573,26 @@ bool ApplyValue(NodeMap &nodes, const Json &response)
     }
     return true;
 }
+bool ApplyMeterFeedback(Snapshot &snapshot, const Json &response)
+{
+    if (response.Has("error")) return false;
+    const auto path = response.At("path").String();
+    const auto &value = response.At("data");
+    const auto apply = [&](auto &items) {
+        for (auto &item : items)
+            for (size_t leg = 0; leg < item.meters.size(); ++leg)
+            {
+                const auto prefix = item.path + "/meters/" + std::to_string(leg) + "/";
+                auto &meter = item.meters[leg];
+                if (path == prefix + "MeterLevel/value") { meter.levelDb = Numeric(value); return true; }
+                if (path == prefix + "MeterPeakLevel/value") { meter.peakDb = Numeric(value); return true; }
+                if (path == prefix + "MeterClip/value" && value.kind == Json::Kind::Boolean)
+                { meter.clip = value.Bool(); return true; }
+            }
+        return false;
+    };
+    return apply(snapshot.channels) || apply(snapshot.monitors);
+}
 std::vector<std::string> SubscriptionPaths(const NodeMap &nodes)
 {
     static const std::set<std::string> allowed = {"DeviceOnline",

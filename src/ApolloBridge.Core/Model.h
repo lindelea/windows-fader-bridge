@@ -91,6 +91,7 @@ struct Snapshot
     bool connected = false;
     uint64_t generation = 0;
     uint64_t metadataRevision = 0;
+    uint64_t controlRevision = 0; // Changes to non-meter state; zero means uncached/unknown.
     uint64_t receivedFrames = 0;
     size_t onlineDevices = 0, offlineDevices = 0, skippedChannels = 0;
     std::chrono::steady_clock::time_point receivedAt{};
@@ -113,6 +114,8 @@ std::vector<Channel> SurfaceChannels(const Snapshot &snapshot);
 std::optional<double> MeterMaximum(const std::vector<Meter> &meters, bool peakHold);
 // Accept only updates for known, previously discovered properties.
 bool ApplyValue(NodeMap &nodes, const Json &response);
+// Update only known meter legs, preserving configuration and channel state.
+bool ApplyMeterFeedback(Snapshot &snapshot, const Json &response);
 std::vector<std::string> SubscriptionPaths(const NodeMap &nodes);
 std::string StableToken(std::string_view identity);
 uint32_t ChannelColor(const Channel &channel);

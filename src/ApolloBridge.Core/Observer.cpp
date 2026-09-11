@@ -1,5 +1,6 @@
 #include "Observer.h"
 #include "ReadOnlyClient.h"
+#include "Configuration.h"
 #include <set>
 #include <stdexcept>
 
@@ -137,6 +138,11 @@ void Observer::Start()
     stop_ = false;
     thread_ = std::thread([this] { Run(); });
 }
+void Observer::SetNotification(std::function<void()> notify)
+{
+    if (thread_.joinable()) throw std::logic_error("Set notification before Start");
+    notify_ = std::move(notify);
+}
 void Observer::Stop()
 {
     stop_ = true;
@@ -151,8 +157,11 @@ Snapshot Observer::Latest() const
 }
 void Observer::Publish(Snapshot snapshot)
 {
-    std::lock_guard<std::mutex> lock(mutex_);
-    latest_ = std::move(snapshot);
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        latest_ = std::move(snapshot);
+    }
+    if (notify_) notify_();
 }
 void Observer::Run()
 {
@@ -164,24 +173,33 @@ void Observer::Run()
             ReadOnlyClient client(stop_, port_);
             client.Connect();
             NodeMap nodes = Discover(client, {}, {}, configuration_);
+            const auto identity = BuildConfiguration(nodes)->systemIdentity;
             ++generation;
             std::set<std::string> subscribed;
             bool refreshRequested = false;
             uint64_t revision = 1;
-            auto publishAt = Clock::now();
+            uint64_t controlRevision = 0;
+            Snapshot state;
+            bool modelDirty = true, pending = true;
             auto receivedAt = Clock::now();
             const auto publish = [&] {
-                if (Clock::now() < publishAt)
+                if (!pending)
                     return;
-                auto state = BuildSnapshot(nodes);
+                if (modelDirty)
+                {
+                    state = BuildSnapshot(nodes);
+                    ++controlRevision;
+                }
+                modelDirty = false;
                 state.connected = true;
                 state.generation = generation;
                 state.metadataRevision = revision;
+                state.controlRevision = controlRevision;
                 state.receivedFrames = client.Frames();
                 state.receivedAt = receivedAt;
                 state.status = state.onlineDevices ? "Read-only connection" : "No online Apollo";
-                Publish(std::move(state));
-                publishAt = Clock::now() + std::chrono::milliseconds(33);
+                Publish(state);
+                pending = false;
             };
             const auto update = [&](const Json &message) {
                 receivedAt = Clock::now();
@@ -199,8 +217,11 @@ void Observer::Run()
                         Property(node->second, property).At("value").scalar != message.At("data").scalar)
                         refreshRequested = true;
                 }
-                ApplyValue(nodes, message);
-                publish();
+                if (ApplyValue(nodes, message))
+                {
+                    if (!modelDirty && !ApplyMeterFeedback(state, message)) modelDirty = true;
+                    pending = true;
+                }
             };
             const auto subscribe = [&] {
                 for (const auto &path : SubscriptionPaths(nodes))
@@ -221,17 +242,34 @@ void Observer::Run()
                     throw std::runtime_error("Apollo subscription lifetime limit exceeded");
             };
             subscribe();
+            publish();
             auto refreshAt = Clock::now() + std::chrono::seconds(10);
             auto heartbeatAt = Clock::now() + std::chrono::seconds(1);
             while (!stop_)
             {
+                if (renew_.exchange(false))
+                    break;
                 if (auto message = client.Poll(20))
+                {
                     update(*message);
+                    // Consume already available frames, never wait to fill a
+                    // batch. Bound draining so a continuous stream cannot
+                    // starve publication or lifecycle checks.
+                    const auto drainUntil = Clock::now() + std::chrono::milliseconds(2);
+                    for (int n = 0; n < 255 && Clock::now() < drainUntil; ++n)
+                    {
+                        auto next = client.Poll(0);
+                        if (!next) break;
+                        update(*next);
+                    }
+                    publish();
+                }
                 const auto now = Clock::now();
                 if (now >= heartbeatAt)
                 {
                     const auto root = client.Get("/devices", update);
                     receivedAt = Clock::now();
+                    pending = true;
                     if (Children(root) != Children(nodes.at("/devices")))
                         refreshAt = now;
                     heartbeatAt = Clock::now() + std::chrono::seconds(1);
@@ -244,15 +282,26 @@ void Observer::Run()
                     // No model is rebuilt from a partial/failed discovery.
                     auto fresh = Discover(client, update, [&] {
                         receivedAt = Clock::now();
+                        pending = true;
                         publish();
                     }, configuration_);
+                    // Paths can survive a driver/device reconstruction while
+                    // the engine's subscription objects do not. A new socket
+                    // gives every path a fresh subscription exactly once.
+                    if (BuildConfiguration(fresh)->systemIdentity != identity)
+                        break;
                     nodes = std::move(fresh);
+                    modelDirty = pending = true;
                     ++revision;
                     subscribe();
                     refreshAt = Clock::now() + std::chrono::seconds(10);
                 }
                 publish();
             }
+            // Planned subscription renewal is immediate, not an error retry.
+            // The next snapshot carries a fresh connection generation.
+            if (!stop_)
+                continue;
         }
         catch (const std::exception &error)
         {

@@ -25,8 +25,8 @@ if ($TransportTests) {
 }
 if (-not $CoreOnly) {
     if (-not (Test-Path -LiteralPath (Join-Path $AvidEuconSdkDir 'include\EuConManager.h'))) { throw 'Obtain and install the Avid EUCON SDK separately. The core tests do not need it.' }
-    $nativeOutput = Join-Path $projectRoot "artifacts\$NativeOutputName\$Configuration\"
-    $nativeIntermediate = Join-Path $projectRoot "obj\$NativeOutputName\$Configuration\"
+    $nativeOutput = (Join-Path $projectRoot "artifacts\$NativeOutputName\$Configuration").Replace('\', '/') + '/'
+    $nativeIntermediate = (Join-Path $projectRoot "obj\$NativeOutputName\$Configuration").Replace('\', '/') + '/'
     & $msbuild (Join-Path $projectRoot 'src\ApolloBridge.EuconHost\ApolloBridge.EuconHost.vcxproj') /m /t:Build "/p:Configuration=$Configuration" /p:Platform=x64 $solutionDir "/p:AvidEuconSdkDir=$AvidEuconSdkDir" "/p:OutDir=$nativeOutput" "/p:IntDir=$nativeIntermediate" /v:minimal
     if ($LASTEXITCODE -ne 0) { throw 'Apollo EUCON host build failed.' }
     & (Join-Path $nativeOutput 'ApolloBridge.Eucon.exe') --desktop-self-test | Out-Host

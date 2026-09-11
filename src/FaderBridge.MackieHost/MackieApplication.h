@@ -103,6 +103,7 @@ private:
     void ExecuteCommand(const std::wstring& id);
     void CommandLoop();
     void Save();
+    void Restart();
     void Quit();
     void TrayMenu();
     const AudioStripState* Find(const std::wstring& key) const;

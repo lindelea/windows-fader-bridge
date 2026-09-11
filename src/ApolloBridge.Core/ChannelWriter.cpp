@@ -133,7 +133,7 @@ std::optional<Json> ChannelWriteClient::ApplyRealtime(
     // in front of audible control changes.
     DrainReplies(0);
     client_.SendBytes(command);
-    DrainReplies(ContinuousField(request.field) ? 0 : 5);
+    DrainReplies(0);
     return request.value;
 }
 
@@ -471,9 +471,7 @@ Channel ChannelController::Feedback(Channel channel)
 }
 void ChannelController::Run()
 {
-    constexpr auto liveWriteInterval = std::chrono::milliseconds(10);
     std::unique_ptr<ChannelWriteClient> client;
-    std::optional<Clock::time_point> replyCheckAt;
     std::string replyKey;
     uint64_t replyAuthority = 0;
     while (!stop_)
@@ -483,23 +481,17 @@ void ChannelController::Run()
         std::string requestKey;
         try
         {
-            if (client && replyCheckAt && Clock::now() >= *replyCheckAt)
+            if (client)
             {
                 requestKey = replyKey;
                 authority = replyAuthority;
                 client->CheckRealtimeReplies();
-                replyCheckAt.reset();
             }
             Validate();
             {
                 std::unique_lock<std::mutex> lock(mutex_);
                 while (!stop_ && !request)
                 {
-                    const auto now = Clock::now();
-                    if (replyCheckAt && now >= *replyCheckAt)
-                        break;
-                    auto nextReady = Clock::time_point::max();
-                    bool queued = false;
                     auto cursor = permissions_.upper_bound(lastKey_);
                     for (size_t n = 0; n < permissions_.size(); ++n)
                     {
@@ -508,19 +500,7 @@ void ChannelController::Run()
                         auto &entry = *cursor++;
                         if (!entry.second.queue.Size())
                             continue;
-                        queued = true;
-                        auto candidate = entry.second.queue.TakeReady([&](const ChannelRequest &r) {
-                            if (!ContinuousField(r.field))
-                                return true;
-                            const auto sent = entry.second.lastDispatch.find(r.field);
-                            if (sent == entry.second.lastDispatch.end())
-                                return true;
-                            const auto ready = sent->second + liveWriteInterval;
-                            if (now >= ready)
-                                return true;
-                            nextReady = std::min(nextReady, ready);
-                            return false;
-                        });
+                        auto candidate = entry.second.queue.Take();
                         if (!candidate)
                             continue;
                         requestKey = lastKey_ = entry.first;
@@ -531,15 +511,9 @@ void ChannelController::Run()
                     }
                     if (request)
                         break;
-                    // No artificial global sleep: a newly queued switch or a
-                    // different fader wakes immediately, while only the same
-                    // continuous address waits for its own 100 Hz slot.
-                    auto wakeAt = now + std::chrono::milliseconds(50);
-                    if (queued && nextReady != Clock::time_point::max())
-                        wakeAt = std::min(wakeAt, nextReady);
-                    if (replyCheckAt)
-                        wakeAt = std::min(wakeAt, *replyCheckAt);
-                    wake_.wait_until(lock, wakeAt);
+                    // Only idle workers wait; Submit wakes immediately. Poll
+                    // delayed replies on idle wakeups as well as between writes.
+                    wake_.wait_for(lock, std::chrono::milliseconds(50));
                     break; // Revalidate topology and outstanding replies after every wait.
                 }
                 if (stop_)
@@ -549,6 +523,8 @@ void ChannelController::Run()
             }
             if (!request)
                 continue;
+            replyKey = requestKey;
+            replyAuthority = authority;
             if (!client)
             {
                 client = std::make_unique<ChannelWriteClient>(stop_, port_);
@@ -584,8 +560,6 @@ void ChannelController::Run()
                     continue;
                 }
                 ++confirmed_;
-                if (ContinuousField(request->field))
-                    p.lastDispatch[request->field] = Clock::now();
                 lastOperation_ = std::string(FieldName(request->field)) + " dispatched=" + result->scalar +
                                  " request=" + std::to_string(request->sequence) + " latency-ms=" +
                                  std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -608,22 +582,13 @@ void ChannelController::Run()
                     it->second = {request->sequence, *result, true, Clock::now()};
             }
 
-            // Drain any reply already available without delaying another
-            // control. Per-address scheduling above provides the 100 Hz cap.
-            if (ContinuousField(request->field))
-            {
-                client->CheckRealtimeReplies();
-                replyCheckAt = Clock::now() + liveWriteInterval;
-                replyKey = requestKey;
-                replyAuthority = authority;
-            }
-            else
-                replyCheckAt.reset();
+            replyKey = requestKey;
+            replyAuthority = authority;
+            client->CheckRealtimeReplies();
         }
         catch (const std::exception &e)
         {
             client.reset(); // never retry a possibly executed write
-            replyCheckAt.reset();
             std::lock_guard<std::mutex> lock(mutex_);
             const auto found = permissions_.find(requestKey);
             if (found != permissions_.end() && found->second.callbackEpoch == authority)

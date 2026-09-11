@@ -15,6 +15,7 @@
 namespace
 {
 constexpr UINT AudioMessage = WM_APP + 10, TrayMessage = WM_APP + 11, CommandResult = WM_APP + 12;
+constexpr int RestartApp = 1901;
 enum Id { Input = 101, Output, Profile, Refresh, Connection, Touch, Lcd, Meters, Trace,
     Tracks, PreviousBank, NextBank, BankLabel,
     Category, CommandChoice, Learn, BindingList, RemoveBinding, State, MediaLabel, Hint,
@@ -872,13 +873,34 @@ void MackieApplication::TrayMenu()
     AppendMenuW(menu, MF_STRING, 1, zh ? L"打开 Windows Fader Bridge" : L"Open Windows Fader Bridge");
     AppendMenuW(menu, MF_STRING | MF_DISABLED, 2, Midi().Connected() ? (zh ? L"状态：已连接" : L"Status: connected") : (zh ? L"状态：未连接" : L"Status: disconnected"));
     AppendMenuW(menu, MF_STRING, Diagnostics, zh ? L"打开诊断目录" : L"Open diagnostics folder");
+    AppendMenuW(menu, MF_STRING, RestartApp, zh ? L"重新启动" : L"Restart");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, ExitApp, zh ? L"退出" : L"Quit");
     POINT point{}; GetCursorPos(&point); SetForegroundWindow(window_);
     const auto command = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, point.x, point.y, 0, window_, nullptr);
     DestroyMenu(menu);
     if (command == 1) { if (desktop_) desktop_->Show(); else { ShowWindow(window_, SW_RESTORE); SetForegroundWindow(window_); } }
+    else if (command == RestartApp) Restart();
     else if (command) Command(command, 0);
+}
+void MackieApplication::Restart()
+{
+    wchar_t path[32768]{};
+    const auto length = GetModuleFileNameW(nullptr, path, static_cast<DWORD>(std::size(path)));
+    if (!length || length >= std::size(path))
+    {
+        Status(L"Windows 无法确定应用位置。");
+        return;
+    }
+    const auto parameters = std::wstring(L"--background --restart-from ") +
+        std::to_wstring(GetCurrentProcessId());
+    const auto result = ShellExecuteW(window_, L"open", path, parameters.c_str(), nullptr, SW_SHOWNORMAL);
+    if (reinterpret_cast<INT_PTR>(result) <= 32)
+    {
+        Status(L"Windows 无法重新启动应用。");
+        return;
+    }
+    Quit();
 }
 void MackieApplication::Quit()
 {
@@ -919,7 +941,10 @@ LRESULT MackieApplication::Message(UINT message, WPARAM w, LPARAM l)
     case WM_HOTKEY:
         if (w == 1) { if (desktop_) desktop_->Show(); else { ShowWindow(window_, SW_RESTORE); SetForegroundWindow(window_); } return 0; }
         break;
-    case WM_COMMAND: Command(LOWORD(w), HIWORD(w)); return 0;
+    case WM_COMMAND:
+        if (LOWORD(w) == RestartApp) Restart();
+        else Command(LOWORD(w), HIWORD(w));
+        return 0;
     case CommandResult: if (!w) Status(L"Windows 命令执行失败；请查看日志或目标窗口的权限。"); return 0;
     case WM_NOTIFY:
         if (const auto header = reinterpret_cast<NMHDR*>(l); header->idFrom == Tracks && !renderGuard_)

@@ -36,6 +36,7 @@ private:
     void Navigate(int page);
     void Paint(HDC);
     void DrawItem(DRAWITEMSTRUCT*);
+    void DrawItemContents(DRAWITEMSTRUCT*);
     void Act(int id, int code);
     void Targets();
     void Catalog();

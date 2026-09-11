@@ -13,6 +13,27 @@
 
 namespace
 {
+class ControlFrame
+{
+    HDC target_, memory_ = nullptr;
+    HBITMAP bitmap_ = nullptr;
+    HGDIOBJ old_ = nullptr;
+    int width_ = 0, height_ = 0;
+public:
+    ControlFrame(HDC target, const RECT& rect) : target_(target),
+        width_(rect.right-rect.left),height_(rect.bottom-rect.top)
+    {
+        if(width_<=0||height_<=0)return;
+        memory_=CreateCompatibleDC(target);
+        bitmap_=CreateCompatibleBitmap(target,width_,height_);
+        if(memory_&&bitmap_)old_=SelectObject(memory_,bitmap_);
+    }
+    HDC Dc() const { return old_?memory_:target_; }
+    bool Buffered() const { return old_!=nullptr; }
+    void Present(int x=0,int y=0) const
+    {if(old_)BitBlt(target_,x,y,width_,height_,memory_,0,0,SRCCOPY);}
+    ~ControlFrame(){if(old_)SelectObject(memory_,old_);if(bitmap_)DeleteObject(bitmap_);if(memory_)DeleteDC(memory_);}
+};
 constexpr COLORREF Bg = RGB(16,18,22), Side = RGB(20,23,28), Card = RGB(25,29,36),
     Edge = RGB(43,49,59), Ink = RGB(235,238,243), Muted = RGB(147,157,173),
     Amber = RGB(237,183,90), Green = RGB(81,204,156), Red = RGB(246,126,126), Selection = RGB(43,39,32);
@@ -124,6 +145,8 @@ void MackieDesktop::Navigate(int p)
 }
 void MackieDesktop::Build()
 {
+    const bool visible=IsWindowVisible(window_)!=FALSE;
+    if(visible)SendMessageW(window_,WM_SETREDRAW,FALSE,0);
     building_=true;lastSelectedKey_.clear();
     for(auto c:children_)DestroyWindow(c);children_.clear();targets_.clear();catalog_.clear();trackKeys_.clear();
     const wchar_t* cn[]={L"通道总览",L"通用",L"设备",L"按键分配",L"旋钮分配",L"Jog 与方向",L"高级",L"关于"};
@@ -158,7 +181,8 @@ void MackieDesktop::Build()
     if(page_==7){Button(LicenseLink,L"MPL 2.0");Button(VersionLink,BRIDGE_PRODUCT_VERSION_DISPLAY_W);Button(IssuesLink,T(L"报告错误",L"Report an issue"));}
     building_=false;Layout();Tick();
     if(page_>=3&&page_<=5){int row=Row(window_,Commands);if(row>=0)ListView_EnsureVisible(GetDlgItem(window_,Commands),row,FALSE);}
-    InvalidateRect(window_,nullptr,FALSE);
+    if(visible)SendMessageW(window_,WM_SETREDRAW,TRUE,0);
+    RedrawWindow(window_,nullptr,nullptr,RDW_INVALIDATE|RDW_ALLCHILDREN);
 }
 void MackieDesktop::Layout()
 {
@@ -286,6 +310,18 @@ void MackieDesktop::Paint(HDC dc)
     else if(Editing())Text(dc,T(L"编辑模式 · 输入预览",L"EDIT MODE · INPUT PREVIEW"),x,height_-40,w,28,Muted,1);
 }
 void MackieDesktop::DrawItem(DRAWITEMSTRUCT* d)
+{
+    const int width=d->rcItem.right-d->rcItem.left,height=d->rcItem.bottom-d->rcItem.top;
+    if(width<=0||height<=0)return;
+    ControlFrame frame(d->hDC,{0,0,width,height});
+    if(!frame.Buffered()){DrawItemContents(d);return;}
+    auto buffered=*d;
+    buffered.hDC=frame.Dc();
+    buffered.rcItem={0,0,width,height};
+    DrawItemContents(&buffered);
+    frame.Present(d->rcItem.left,d->rcItem.top);
+}
+void MackieDesktop::DrawItemContents(DRAWITEMSTRUCT* d)
 {
     int saved=SaveDC(d->hDC);SetViewportOrgEx(d->hDC,d->rcItem.left,d->rcItem.top,nullptr);
     int w=MulDiv(d->rcItem.right-d->rcItem.left,96,dpi_),h=MulDiv(d->rcItem.bottom-d->rcItem.top,96,dpi_);
@@ -574,14 +610,16 @@ LRESULT CALLBACK MackieDesktop::FieldProc(HWND window,UINT message,WPARAM w,LPAR
     {
         PAINTSTRUCT paint{};auto dc=message==WM_PAINT?BeginPaint(window,&paint):reinterpret_cast<HDC>(w);
         if(!dc)return 0;
-        RECT r{};GetClientRect(window,&r);auto brush=CreateSolidBrush(Card);FillRect(dc,&r,brush);DeleteObject(brush);
+        RECT r{};GetClientRect(window,&r);ControlFrame frame(dc,r);auto target=frame.Dc();
+        auto brush=CreateSolidBrush(Card);FillRect(target,&r,brush);DeleteObject(brush);
         int width=MulDiv(r.right,96,self->dpi_),height=MulDiv(r.bottom,96,self->dpi_);
-        self->Panel(dc,0,0,width,height,Card,GetFocus()==window?Amber:Edge);
+        self->Panel(target,0,0,width,height,Card,GetFocus()==window?Amber:Edge);
         const int selected=static_cast<int>(SendMessageW(window,CB_GETCURSEL,0,0));std::wstring label;
         if(selected>=0){int n=static_cast<int>(SendMessageW(window,CB_GETLBTEXTLEN,selected,0));if(n>=0&&n<32768){label.resize(n+1);SendMessageW(window,CB_GETLBTEXT,selected,reinterpret_cast<LPARAM>(label.data()));label.resize(n);}}
-        self->Text(dc,label,12,0,width-48,height,IsWindowEnabled(window)?Ink:Muted);
-        auto font=SelectObject(dc,self->iconFont_);SetBkMode(dc,TRANSPARENT);SetTextColor(dc,IsWindowEnabled(window)?Ink:Muted);
-        RECT arrow{r.right-self->S(32),0,r.right-self->S(8),r.bottom};DrawTextW(dc,L"\uE70D",1,&arrow,DT_CENTER|DT_VCENTER|DT_SINGLELINE);SelectObject(dc,font);
+        self->Text(target,label,12,0,width-48,height,IsWindowEnabled(window)?Ink:Muted);
+        auto font=SelectObject(target,self->iconFont_);SetBkMode(target,TRANSPARENT);SetTextColor(target,IsWindowEnabled(window)?Ink:Muted);
+        RECT arrow{r.right-self->S(32),0,r.right-self->S(8),r.bottom};DrawTextW(target,L"\uE70D",1,&arrow,DT_CENTER|DT_VCENTER|DT_SINGLELINE);SelectObject(target,font);
+        frame.Present();
         if(message==WM_PAINT)EndPaint(window,&paint);return 0;
     }
     auto result=DefSubclassProc(window,message,w,l);
@@ -596,16 +634,18 @@ LRESULT CALLBACK MackieDesktop::ToggleProc(HWND window,UINT message,WPARAM w,LPA
     if(message==WM_PAINT||message==WM_PRINTCLIENT)
     {
         PAINTSTRUCT paint{};auto dc=message==WM_PAINT?BeginPaint(window,&paint):reinterpret_cast<HDC>(w);if(!dc)return 0;
-        RECT r{};GetClientRect(window,&r);auto brush=CreateSolidBrush(Card);FillRect(dc,&r,brush);DeleteObject(brush);
+        RECT r{};GetClientRect(window,&r);ControlFrame frame(dc,r);auto target=frame.Dc();
+        auto brush=CreateSolidBrush(Card);FillRect(target,&r,brush);DeleteObject(brush);
         bool on=SendMessageW(window,BM_GETCHECK,0,0)==BST_CHECKED,enabled=IsWindowEnabled(window)!=FALSE;
         int width=MulDiv(r.right,96,self->dpi_),height=MulDiv(r.bottom,96,self->dpi_);
         auto fill=on?(enabled?Amber:RGB(119,94,53)):Edge;
-        auto pen=CreatePen(PS_SOLID,1,GetFocus()==window?Ink:fill);brush=CreateSolidBrush(fill);auto op=SelectObject(dc,pen),ob=SelectObject(dc,brush);
-        RoundRect(dc,1,self->S(2),r.right-1,r.bottom-self->S(2),self->S(height),self->S(height));
-        SelectObject(dc,op);SelectObject(dc,ob);DeleteObject(pen);DeleteObject(brush);
+        auto pen=CreatePen(PS_SOLID,1,GetFocus()==window?Ink:fill);brush=CreateSolidBrush(fill);auto op=SelectObject(target,pen),ob=SelectObject(target,brush);
+        RoundRect(target,1,self->S(2),r.right-1,r.bottom-self->S(2),self->S(height),self->S(height));
+        SelectObject(target,op);SelectObject(target,ob);DeleteObject(pen);DeleteObject(brush);
         int diameter=height-12,left=on?width-diameter-6:6;
-        brush=CreateSolidBrush(enabled?(on?Bg:Ink):Muted);ob=SelectObject(dc,brush);op=SelectObject(dc,GetStockObject(NULL_PEN));
-        Ellipse(dc,self->S(left),self->S(6),self->S(left+diameter),self->S(6+diameter));SelectObject(dc,op);SelectObject(dc,ob);DeleteObject(brush);
+        brush=CreateSolidBrush(enabled?(on?Bg:Ink):Muted);ob=SelectObject(target,brush);op=SelectObject(target,GetStockObject(NULL_PEN));
+        Ellipse(target,self->S(left),self->S(6),self->S(left+diameter),self->S(6+diameter));SelectObject(target,op);SelectObject(target,ob);DeleteObject(brush);
+        frame.Present();
         if(message==WM_PAINT)EndPaint(window,&paint);return 0;
     }
     auto result=DefSubclassProc(window,message,w,l);
@@ -671,26 +711,29 @@ void MackieDesktop::Act(int id,int code)
         {bool complete=true;for(int note=0;note<static_cast<int>(Windows80Commands.size());++note){auto it=app_.Settings().bindings.find(15*128+note);if(it==app_.Settings().bindings.end()||it->second!=Windows80Commands[note])complete=false;}
         if(complete)Notice(L"80 键预设已就绪，可在按键分配页查看。",L"The 80-key preset is ready. Review it in Button mapping.");
         else Notice(L"预设未应用：存在冲突分配或保存失败。原分配保持不变。",L"Preset not applied: conflicting mappings or a save error. Existing mappings are unchanged.",true);}break;
-    case LicenseLink:ShellExecuteW(window_,L"open",L"https://github.com/lindelea/windows-fader-bridge/blob/main/LICENSE",nullptr,nullptr,SW_SHOWNORMAL);break;
-    case VersionLink:ShellExecuteW(window_,L"open",L"https://github.com/lindelea/windows-fader-bridge",nullptr,nullptr,SW_SHOWNORMAL);break;
-    case IssuesLink:ShellExecuteW(window_,L"open",L"https://github.com/lindelea/windows-fader-bridge/issues",nullptr,nullptr,SW_SHOWNORMAL);break;
+    case LicenseLink:ShellExecuteW(window_,L"open",L"https://github.com/lindelea/windows-fader-bridge-mackie/blob/main/LICENSE",nullptr,nullptr,SW_SHOWNORMAL);break;
+    case VersionLink:ShellExecuteW(window_,L"open",L"https://github.com/lindelea/windows-fader-bridge-mackie",nullptr,nullptr,SW_SHOWNORMAL);break;
+    case IssuesLink:ShellExecuteW(window_,L"open",L"https://github.com/lindelea/windows-fader-bridge-mackie/issues",nullptr,nullptr,SW_SHOWNORMAL);break;
     }
 }
 void MackieDesktop::Tick()
 {
     if(!window_||!IsWindowVisible(window_)||building_)return;
     Set(Connect,app_.Midi().Connected()?T(L"断开设备",L"Disconnect"):T(L"连接设备",L"Connect device"));
-    const auto check=[&](int id,bool value){auto c=GetDlgItem(window_,id);if(c){SendMessageW(c,BM_SETCHECK,value?BST_CHECKED:BST_UNCHECKED,0);InvalidateRect(c,nullptr,FALSE);}};
+    const auto check=[&](int id,bool value){auto c=GetDlgItem(window_,id);if(c&&
+        (SendMessageW(c,BM_GETCHECK,0,0)==BST_CHECKED)!=value){SendMessageW(c,BM_SETCHECK,value?BST_CHECKED:BST_UNCHECKED,0);InvalidateRect(c,nullptr,FALSE);}};
+    const auto enable=[&](int id,bool value){auto c=GetDlgItem(window_,id);if(c&&(IsWindowEnabled(c)!=FALSE)!=value)EnableWindow(c,value);};
     if(page_==1){check(TrayClose,app_.workspace_.closeToTray);check(Startup,StartupEnabled());}
     if(page_==2)
     {
         check(Touch,app_.Settings().touch);check(Lcd,app_.Settings().lcd);check(Meters,app_.Settings().meters);check(AutoConnect,app_.Settings().autoConnect);
-        for(int id:{InPort,OutPort,Profile,Touch,Lcd,Meters})EnableWindow(GetDlgItem(window_,id),app_.selectedDevice_&&!app_.Midi().Connected());
-        for(int id:{DeviceName,AutoConnect,Connect,SaveDeviceButton,RemoveDevice})EnableWindow(GetDlgItem(window_,id),app_.selectedDevice_!=nullptr);
-        EnableWindow(GetDlgItem(window_,AddDevice),app_.devices_.size()<16);InvalidateRect(GetDlgItem(window_,DeviceList),nullptr,FALSE);
+        for(int id:{InPort,OutPort,Profile,Touch,Lcd,Meters})enable(id,app_.selectedDevice_&&!app_.Midi().Connected());
+        for(int id:{DeviceName,AutoConnect,Connect,SaveDeviceButton,RemoveDevice})enable(id,app_.selectedDevice_!=nullptr);
+        enable(AddDevice,app_.devices_.size()<16);
         const bool p1Nano=app_.selectedDevice_&&Choice(window_,Profile)==1;
-        ShowWindow(GetDlgItem(window_,Preset),p1Nano?SW_SHOWNA:SW_HIDE);
-        EnableWindow(GetDlgItem(window_,Preset),p1Nano&&!app_.Midi().Connected());
+        if(auto preset=GetDlgItem(window_,Preset);preset&&(IsWindowVisible(preset)!=FALSE)!=p1Nano)
+            ShowWindow(preset,p1Nano?SW_SHOWNA:SW_HIDE);
+        enable(Preset,p1Nano&&!app_.Midi().Connected());
     }
     if(page_==6)check(Trace,std::any_of(app_.devices_.begin(),app_.devices_.end(),[](const auto& d){return d->midi.Trace.load();}));
     if(page_==5&&Choice(window_,Layer)!=(app_.Surface().CursorZoom()?1:0))SendDlgItemMessageW(window_,Layer,CB_SETCURSEL,app_.Surface().CursorZoom()?1:0,0);
@@ -711,7 +754,7 @@ void MackieDesktop::Tick()
         RECT client{};GetClientRect(list,&client);ListView_SetColumnWidth(list,0,std::max(1L,client.right-2));
         InvalidateRect(list,nullptr,FALSE);listGuard_=false;
     }
-    InvalidateRect(window_,nullptr,FALSE);
+    if(page_==0)InvalidateRect(window_,nullptr,FALSE);
 }
 void MackieDesktop::AudioFrameChanged()
 {

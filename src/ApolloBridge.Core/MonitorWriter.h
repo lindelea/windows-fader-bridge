@@ -72,7 +72,6 @@ class MonitorController
     std::condition_variable wake_;
     MonitorQueue queue_;
     std::map<MonitorField, Pending> pending_;
-    std::map<MonitorField, std::chrono::steady_clock::time_point> lastDispatch_;
     std::string error_, lastOperation_;
     uint64_t confirmed_ = 0;
     std::thread worker_;

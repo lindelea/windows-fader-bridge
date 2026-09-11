@@ -30,6 +30,7 @@ private:
 
     bool CreateMainWindow(int showCommand, bool startInBackground);
     bool OnCreate();
+    void InitializeHost();
     void OnAudioFrame(AudioFrame& frame);
     void OnSurfaceChange(SurfaceChange& change);
     void Paint();
@@ -103,6 +104,7 @@ private:
     bool chinese_ = true;
     bool trayAdded_ = false;
     bool exitRequested_ = false;
+    int hostInitializationError_ = 0;
     UINT taskbarCreatedMessage_ = 0U;
     bridge::Shortcut shortcut_{bridge::ShortcutControl | bridge::ShortcutAlt |
         bridge::ShortcutShift, 'W'};

@@ -53,6 +53,7 @@ constexpr int kTrayOpenId = 1101;
 constexpr int kTrayStatusId = 1102;
 constexpr int kTrayStartupId = 1103;
 constexpr int kTrayRestartId = 1104;
+constexpr UINT_PTR kHostRecoveryTimerId = 0x4642U;
 constexpr int kTrayDiagnosticsId = 1105;
 constexpr int kTrayAboutId = 1106;
 constexpr int kTrayExitId = 1107;
@@ -68,11 +69,11 @@ constexpr COLORREF kMutedText = RGB(147, 157, 173);
 constexpr COLORREF kAccent = RGB(155, 108, 255);
 constexpr COLORREF kGreen = RGB(81, 204, 156);
 constexpr COLORREF kRed = RGB(246, 126, 126);
-constexpr wchar_t kProjectUrl[] = L"https://github.com/lindelea/windows-fader-bridge";
+constexpr wchar_t kProjectUrl[] = L"https://github.com/lindelea/windows-fader-bridge-eucon";
 constexpr wchar_t kLicenseUrl[] =
-    L"https://github.com/lindelea/windows-fader-bridge/blob/main/LICENSE";
+    L"https://github.com/lindelea/windows-fader-bridge-eucon/blob/main/LICENSE";
 constexpr wchar_t kIssuesUrl[] =
-    L"https://github.com/lindelea/windows-fader-bridge/issues";
+    L"https://github.com/lindelea/windows-fader-bridge-eucon/issues";
 
 std::wstring WindowText(const HWND window)
 {
@@ -447,11 +448,29 @@ bool ApplicationShell::OnCreate()
     UpdateLanguage();
     ApplyShortcut(shortcutEnabled_, shortcut_, false);
 
-    host_ = std::make_unique<EuconHost>(window_);
+    InitializeHost();
     mediaObserver_ = std::make_unique<WindowsMediaObserver>();
     AddTrayIcon();
     LayoutControls();
     return true;
+}
+
+void ApplicationShell::InitializeHost()
+{
+    // A failed SDK object is fully destroyed before another Initialize call.
+    // Once registration succeeds this host remains alive for the process
+    // lifetime; normal recovery never rebuilds a registered EUCON node.
+    host_.reset();
+    host_ = std::make_unique<EuconHost>(window_);
+    hostInitializationError_ = host_->InitializationError();
+    if (host_->IsReady())
+    {
+        KillTimer(window_, kHostRecoveryTimerId);
+        FB_TRACE("EUCON_INITIALIZATION_READY");
+        return;
+    }
+    FB_TRACE("EUCON_INITIALIZATION_WAIT error=%d", hostInitializationError_);
+    SetTimer(window_, kHostRecoveryTimerId, 2000U, nullptr);
 }
 
 LRESULT ApplicationShell::HandleMessage(const UINT message, const WPARAM wParam,
@@ -495,6 +514,12 @@ LRESULT ApplicationShell::HandleMessage(const UINT message, const WPARAM wParam,
         WindowsCommandExecutor::Execute(static_cast<WindowsCommand>(wParam));
         return 0;
     case WM_TIMER:
+        if (wParam == kHostRecoveryTimerId)
+        {
+            InitializeHost();
+            InvalidateRect(window_, nullptr, FALSE);
+            return 0;
+        }
         if (wParam == kReturnToBackgroundTimerId)
         {
             KillTimer(window_, kReturnToBackgroundTimerId);

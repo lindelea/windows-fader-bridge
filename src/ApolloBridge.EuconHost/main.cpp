@@ -29,6 +29,7 @@ namespace
 constexpr wchar_t WindowClass[] = L"Lindelea.ApolloBridge.EUCON.Window";
 constexpr wchar_t Title[] = L"UAD Console Bridge for EUCON";
 constexpr UINT EuconEventMessage = WM_APP + 10;
+constexpr UINT ObservationMessage = WM_APP + 11;
 constexpr int GlobalShortcutId = 1;
 constexpr UINT_PTR ReturnToBackgroundTimer = 0x5541U;
 constexpr int ConnectButton = 101, LogsButton = 102, LanguageButton = 103, ArmButton = 104,
@@ -88,6 +89,40 @@ bool SdkExampleAdapterRunning()
     } while (Process32NextW(processes, &entry));
     CloseHandle(processes);
     return found;
+}
+DWORD RestartSourceProcessId()
+{
+    int count = 0;
+    auto **arguments = CommandLineToArgvW(GetCommandLineW(), &count);
+    if (!arguments) return 0;
+    DWORD processId = 0;
+    for (int index = 1; index + 1 < count; ++index)
+        if (std::wstring_view(arguments[index]) == L"--restart-from")
+        {
+            wchar_t *end = nullptr;
+            const auto parsed = std::wcstoul(arguments[index + 1], &end, 10);
+            if (end && *end == L'\0') processId = static_cast<DWORD>(parsed);
+            break;
+        }
+    LocalFree(arguments);
+    return processId;
+}
+void WaitForRestartSource()
+{
+    const auto processId = RestartSourceProcessId();
+    if (!processId || processId == GetCurrentProcessId()) return;
+    const auto process = OpenProcess(SYNCHRONIZE, FALSE, processId);
+    if (!process) return;
+    WaitForSingleObject(process, 15000U);
+    CloseHandle(process);
+}
+bool RestartApplication(HWND owner)
+{
+    const auto executable = apollo::DesktopExecutable();
+    const auto parameters = std::wstring(L"--background --restart-from ") +
+        std::to_wstring(GetCurrentProcessId());
+    return reinterpret_cast<INT_PTR>(ShellExecuteW(owner, L"open", executable.c_str(),
+        parameters.c_str(), nullptr, SW_SHOWNORMAL)) > 32;
 }
 int Observe(int seconds, bool configuration = false)
 {
@@ -207,6 +242,7 @@ std::wstring MeterDb(const std::vector<apollo::Meter> &meters, bool peakHold)
 }
 struct App
 {
+    std::atomic<bool> observationPending = false;
     HWND window = nullptr, connect = nullptr, logs = nullptr, language = nullptr, arm = nullptr,
          monitorArm = nullptr, allChannels = nullptr, safety = nullptr, configArm = nullptr;
     apollo::Observer observer;
@@ -350,6 +386,9 @@ struct App
         // authority. Individual cancelled/rejected operations may clear their
         // queues, but must not silently change the user's selected access.
         permissionsActivated = true;
+        // Explicitly restoring control also repairs observation subscriptions
+        // if the driver recreated device objects at their previous paths.
+        observer.RenewSubscriptions();
         if (!eucon || !FreshDesktopState())
         {
             desktopNotice = T(L"设置已保存。", L"Settings saved.");
@@ -539,8 +578,9 @@ struct App
             current.nMax != info.nMax || current.nPage != info.nPage || current.nPos != info.nPos)
             SetScrollInfo(window, SB_VERT, &info, TRUE);
     }
-    void Tick()
+    void Tick(bool observation = false)
     {
+        const auto tickStarted = std::chrono::steady_clock::now();
         if (preview) { UpdateDesktop(); return; }
         snapshot = observer.Latest();
         if (snapshot.status != lastStatus || snapshot.generation != lastGeneration)
@@ -613,9 +653,13 @@ struct App
                 Layout();
             }
         }
-        static unsigned tick = 0;
-        if (++tick % 30 == 0)
+        const auto euconFinished = std::chrono::steady_clock::now();
+        static ULONGLONG conflictCheckAt = 0;
+        if (GetTickCount64() >= conflictCheckAt)
+        {
             adapterConflict = SdkExampleAdapterRunning();
+            conflictCheckAt = GetTickCount64() + 1000;
+        }
         ButtonEnabled(connect,
                       snapshot.connected &&
                           (!channels.empty() || (snapshot.monitors.size() == 1 &&
@@ -635,6 +679,27 @@ struct App
         Layout();
         if (diagnostics) InvalidateRect(window, nullptr, FALSE);
         UpdateDesktop();
+        if (observation && snapshot.connected)
+        {
+            static uint64_t samples = 0;
+            static long long maxEuconUs = 0, maxTickUs = 0;
+            static auto reportAt = tickStarted + std::chrono::seconds(5);
+            const auto micros = [](auto duration) {
+                return static_cast<long long>(std::chrono::duration_cast<std::chrono::microseconds>(duration).count());
+            };
+            ++samples;
+            maxEuconUs = std::max(maxEuconUs, micros(euconFinished - snapshot.receivedAt));
+            maxTickUs = std::max(maxTickUs, micros(std::chrono::steady_clock::now() - tickStarted));
+            if (tickStarted >= reportAt)
+            {
+                apollo::Log("observation-timing samples=" + std::to_string(samples) +
+                    " latest-receive-to-apply-max-us=" + std::to_string(maxEuconUs) +
+                    " owner-update-max-us=" + std::to_string(maxTickUs) +
+                    " eucon=" + std::to_string(eucon != nullptr));
+                samples = 0; maxEuconUs = maxTickUs = 0;
+                reportAt = tickStarted + std::chrono::seconds(5);
+            }
+        }
     }
     void PumpEuconEvents()
     {
@@ -1036,6 +1101,10 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM w, LPARAM l)
     case EuconEventMessage:
         app->PumpEuconEvents();
         return 0;
+    case ObservationMessage:
+        app->observationPending = false;
+        app->Tick(true);
+        return 0;
     case WM_APP + 9:
         if (app->desktop) app->desktop->Show();
         else { ShowWindow(window, SW_RESTORE); SetForegroundWindow(window); }
@@ -1058,6 +1127,11 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM w, LPARAM l)
         if (!app->preview)
         {
             if (app->experimentalConfig) app->observer.EnableConfiguration();
+            app->observer.SetNotification([app, window] {
+                if (!app->observationPending.exchange(true) &&
+                    !PostMessageW(window, ObservationMessage, 0, 0))
+                    app->observationPending = false;
+            });
             app->observer.Start();
         }
         SetTimer(window, 1, 33, nullptr);
@@ -1216,6 +1290,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show)
         else if (std::wstring_view(arguments[i]) == L"--ui-preview") preview = true;
         else if (std::wstring_view(arguments[i]) == L"--preview-connected") previewConnected = true;
         else if (std::wstring_view(arguments[i]) == L"--background") background = true;
+        else if (std::wstring_view(arguments[i]) == L"--restart-from" && i + 1 < count) ++i;
         else if (std::wstring_view(arguments[i]) == L"--observe-seconds" && i + 1 < count)
             observe = std::clamp(_wtoi(arguments[++i]), 1, 60);
         else
@@ -1261,6 +1336,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show)
         }
     }
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    WaitForRestartSource();
     const auto mutex = CreateMutexW(nullptr, TRUE, L"Local\\Lindelea.ApolloBridge.EUCON.v1");
     if (!mutex)
         return 1;
@@ -1383,6 +1459,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show)
                 };
                 actions.disconnect = [&] { app.RevokeControls(); app.desktopNotice = app.T(L"控制已暂停。", L"Control suspended."); app.UpdateDesktop(); };
                 actions.lock = [&] { app.RevokeControls(); app.desktopNotice.clear(); app.UpdateDesktop(); };
+                actions.restart = [&] {
+                    if (RestartApplication(window)) DestroyWindow(window);
+                    else
+                    {
+                        app.desktopNotice = app.T(L"Windows 无法重新启动应用。",
+                                                  L"Windows could not restart the application.");
+                        app.UpdateDesktop();
+                    }
+                };
                 actions.exit = [&] { DestroyWindow(window); };
                 bool startup = false;
                 if (!preview)

@@ -1,4 +1,5 @@
 #include "ApolloEucon.h"
+#include "FeedbackUpdatePolicy.h"
 #include "ChannelLayout.h"
 #include "ConfigLayout.h"
 #include "ConfigWriter.h"
@@ -1330,6 +1331,7 @@ class Strip final : public EuProcessor
         }
         values_.clear();
     }
+    void ApplyMeters(const std::vector<Meter> &meters) { values_ = meters; }
     void WriteMeters(EuBatchedMeterWriter &writer)
     {
         if (!visible_ || handle_ == kEuInvalidVisibilityHandle)
@@ -1508,6 +1510,7 @@ struct ApolloEucon::Impl
     bool manager = false, registered = false;
     int nextTag = 1;
     uint64_t eventCount = 0;
+    FeedbackUpdatePolicy refreshPolicy;
     ChannelController &controller;
     MonitorController &monitorController;
     const bool experimentalConfig;
@@ -1605,6 +1608,30 @@ struct ApolloEucon::Impl
         controller.Validate();
         monitorController.Validate();
         inbox.epoch = controller.Epoch();
+        const auto events = inbox.Take();
+        if (inbox.overflow)
+            throw std::runtime_error("EUCON callback inbox overflow");
+        const auto channelStatus = controller.Status();
+        const auto monitorStatus = monitorController.Status();
+        const auto configStatus = configuration ? configuration->Status() : ConfigStatus{};
+        const FeedbackUpdatePolicy::Stamp stamp{
+            state.generation, state.metadataRevision, state.controlRevision, state.connected ? 1U : 0U,
+            channelStatus.epoch, channelStatus.confirmed, monitorStatus.epoch, monitorStatus.confirmed,
+            configStatus.epoch, configStatus.confirmed, configStatus.busy ? 1U : 0U};
+        const bool full = refreshPolicy.FullUpdate(stamp, !events.empty(),
+            channelStatus.pending || monitorStatus.pending || configStatus.busy,
+            std::chrono::steady_clock::now());
+        if (state.connected && state.controlRevision && !full)
+        {
+            // Meter-only observation cannot change layout, controls or epochs.
+            // Use the existing saved visibility handles and writer lifetime.
+            for (const auto &c : state.channels)
+                if (const auto it = strips.find(c.key); it != strips.end())
+                    it->second->ApplyMeters(c.meters);
+            EuBatchedMeterWriter writer(*node);
+            for (auto &strip : strips) strip.second->WriteMeters(writer);
+            return;
+        }
         const auto channels = SurfaceChannels(state);
         const std::optional<Monitor> monitor =
             state.connected && state.monitors.size() == 1 && MonitorEligible(state.monitors.front())
@@ -1612,7 +1639,7 @@ struct ApolloEucon::Impl
                 : std::nullopt;
         if (inbox.overflow)
             throw std::runtime_error("EUCON callback inbox overflow");
-        for (const auto &event : inbox.Take())
+        for (const auto &event : events)
         {
             bool queued = false;
             if (event.kind == Event::Kind::ApplicationCommand)

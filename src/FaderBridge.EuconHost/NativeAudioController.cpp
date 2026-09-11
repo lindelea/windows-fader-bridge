@@ -2539,19 +2539,31 @@ void NativeAudioController::Run()
 
     DWORD mmcssTaskIndex = 0;
     const auto mmcssHandle = AvSetMmThreadCharacteristicsW(L"Pro Audio", &mmcssTaskIndex);
-    impl_->wakeEvent = wakeEvent_;
-    impl_->changePending = &sessionChangePending_;
-    impl_->discoveryPending = &sessionDiscoveryPending_;
-    if (!impl_->Initialize())
+    // At Windows sign-in, AudioSrv and the default endpoint can become ready
+    // after this process. Keep the owner thread alive and retry initialization
+    // instead of leaving a healthy-looking background process permanently
+    // disconnected. This wait exists only before Core Audio is ready; it never
+    // enters the real-time control or meter path.
+    unsigned initializationAttempts = 0;
+    while (running_)
     {
-        if (mmcssHandle)
-        {
-            AvRevertMmThreadCharacteristics(mmcssHandle);
-        }
+        impl_ = std::make_unique<Impl>();
+        impl_->wakeEvent = wakeEvent_;
+        impl_->changePending = &sessionChangePending_;
+        impl_->discoveryPending = &sessionDiscoveryPending_;
+        if (impl_->Initialize()) break;
+        impl_.reset();
+        ++initializationAttempts;
+        FB_TRACE("AUDIO_INITIALIZATION_WAIT attempt=%u", initializationAttempts);
+        WaitForSingleObject(wakeEvent_, 1000U);
+    }
+    if (!running_)
+    {
+        if (mmcssHandle) AvRevertMmThreadCharacteristics(mmcssHandle);
         CoUninitialize();
-        running_ = false;
         return;
     }
+    FB_TRACE("AUDIO_INITIALIZATION_READY attempts=%u", initializationAttempts + 1U);
 
     impl_->RefreshEndpoints();
     impl_->RefreshApplications();

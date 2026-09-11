@@ -70,8 +70,8 @@ bridge control without changing the current interface state.
 
 Ordinary mixing controls validate the latest device/channel identity, control type
 and range, then dispatch immediately. EUCON events wake the owner thread without
-waiting for the desktop refresh timer. Continuous gestures are capped at 100 Hz and
-coalesce unsent intermediate positions; Console's live state feed performs final
+waiting for the desktop refresh timer. Continuous gestures dispatch without a fixed
+rate gate and coalesce unsent intermediate positions; Console's live state feed performs final
 reconciliation. Plug-in load/unload, preset recall and CONFIG settings retain full
 preflight and post-write confirmation. A failed operation does not revoke the
 selected permission, and an uncertain write is never automatically retried.

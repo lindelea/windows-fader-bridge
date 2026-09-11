@@ -16,6 +16,38 @@ namespace apollo
 {
 namespace
 {
+// Compose each native child in one copy, including focus/hover transitions.
+class ControlFrame
+{
+    HDC target_, memory_ = nullptr;
+    HBITMAP bitmap_ = nullptr;
+    HGDIOBJ old_ = nullptr;
+    RECT rect_;
+  public:
+    ControlFrame(HDC target, RECT rect) : target_(target), rect_(rect)
+    {
+        if (rect.right <= rect.left || rect.bottom <= rect.top) return;
+        memory_ = CreateCompatibleDC(target);
+        bitmap_ = CreateCompatibleBitmap(target, rect.right - rect.left, rect.bottom - rect.top);
+        if (memory_ && bitmap_)
+        {
+            old_ = SelectObject(memory_, bitmap_);
+            SetViewportOrgEx(memory_, -rect.left, -rect.top, nullptr);
+        }
+    }
+    HDC Dc() const { return old_ ? memory_ : target_; }
+    void Present()
+    {
+        if (old_) BitBlt(target_, rect_.left, rect_.top, rect_.right - rect_.left,
+                        rect_.bottom - rect_.top, memory_, rect_.left, rect_.top, SRCCOPY);
+    }
+    ~ControlFrame()
+    {
+        if (old_) SelectObject(memory_, old_);
+        if (bitmap_) DeleteObject(bitmap_);
+        if (memory_) DeleteDC(memory_);
+    }
+};
 constexpr wchar_t DesktopClass[] = L"Lindelea.UadConsoleBridge.EUCON.Desktop";
 constexpr COLORREF Bg = RGB(17, 20, 24), Surface = RGB(25, 29, 34), Edge = RGB(47, 53, 61);
 constexpr COLORREF Ink = RGB(235, 237, 240), Secondary = RGB(159, 169, 180), Dim = RGB(111, 122, 135);
@@ -37,6 +69,7 @@ enum Id
     OpenLogs,
     Connect = 220,
     Disconnect,
+    Restart,
     Exit,
     Restore,
     Language = 240,
@@ -237,6 +270,8 @@ HWND ApolloDesktop::Combo(int id, const std::vector<std::wstring> &choices, int 
 }
 void ApolloDesktop::Build()
 {
+    const bool visible = IsWindowVisible(window_) != FALSE;
+    if (visible) SendMessageW(window_, WM_SETREDRAW, FALSE, 0);
     building_ = true;
     for (auto child : children_)
         DestroyWindow(child);
@@ -316,7 +351,8 @@ void ApolloDesktop::Build()
     }
     building_ = false;
     Layout();
-    InvalidateRect(window_, nullptr, FALSE);
+    if (visible) SendMessageW(window_, WM_SETREDRAW, TRUE, 0);
+    RedrawWindow(window_, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN);
 }
 void ApolloDesktop::Place(int id, int x, int y, int w, int h)
 {
@@ -406,21 +442,33 @@ void ApolloDesktop::Hide()
 }
 void ApolloDesktop::Update(DesktopState state)
 {
+    const bool fresh = state.preview || std::chrono::steady_clock::now() - state.snapshot.receivedAt <
+                                             std::chrono::seconds(2);
+    const bool chromeChanged = !state.snapshot.controlRevision ||
+        state.snapshot.controlRevision != state_.snapshot.controlRevision ||
+        state.snapshot.generation != state_.snapshot.generation ||
+        state.snapshot.metadataRevision != state_.snapshot.metadataRevision ||
+        state.snapshot.connected != state_.snapshot.connected ||
+        state.published != state_.published || state.conflict != state_.conflict ||
+        state.preview != state_.preview || state.configExtension != state_.configExtension ||
+        state.monitorEnabled != state_.monitorEnabled || state.activeCeiling != state_.activeCeiling ||
+        state.notice != state_.notice || fresh != displayFresh_;
+    displayFresh_ = fresh;
     state_ = std::move(state);
-    // Transport/SDK processing remains at its existing cadence. A status window
-    // is repainted at 4 Hz, and never continuously while hidden.
+    // Invalidation coalesces naturally in the window queue; never force painting
+    // inside the observation/control callback or introduce a frame timer.
     if (page_ == 2)
     {
         EnableChanged(GetDlgItem(window_, Connect),
                       !state_.published && !state_.conflict && state_.snapshot.connected && !state_.preview);
         EnableChanged(GetDlgItem(window_, Disconnect), state_.published && !state_.preview);
     }
-    if (IsWindowVisible(window_) && GetTickCount64() - lastPaint_ >= 250)
+    if (IsWindowVisible(window_) && !IsIconic(window_))
     {
         if (!page_)
             RefreshChannels();
-        InvalidateRect(window_, nullptr, FALSE);
-        lastPaint_ = GetTickCount64();
+        if (chromeChanged)
+            InvalidateRect(window_, nullptr, FALSE);
     }
 }
 void ApolloDesktop::Navigate(int page)
@@ -683,6 +731,10 @@ void ApolloDesktop::Act(int id, int code)
     case Disconnect:
         if (!state_.preview)
             actions_.disconnect();
+        break;
+    case Restart:
+        if (!state_.preview && actions_.restart)
+            actions_.restart();
         break;
     case LockAll:
         if (!state_.preview)
@@ -977,6 +1029,14 @@ void ApolloDesktop::Paint(HDC dc)
 }
 void ApolloDesktop::DrawItem(DRAWITEMSTRUCT *d)
 {
+    ControlFrame frame(d->hDC, d->rcItem);
+    auto buffered = *d;
+    buffered.hDC = frame.Dc();
+    DrawItemContents(&buffered);
+    frame.Present();
+}
+void ApolloDesktop::DrawItemContents(DRAWITEMSTRUCT *d)
+{
     if (d->CtlType == ODT_LISTVIEW && d->CtlID == ChannelList)
     {
         DrawChannel(d);
@@ -1073,6 +1133,8 @@ LRESULT CALLBACK ApolloDesktop::ToggleProc(HWND window, UINT message, WPARAM w, 
         auto dc = message == WM_PAINT ? BeginPaint(window, &paint) : reinterpret_cast<HDC>(w);
         RECT r{};
         GetClientRect(window, &r);
+        ControlFrame frame(dc, r);
+        dc = frame.Dc();
         auto b = CreateSolidBrush(Surface);
         FillRect(dc, &r, b);
         DeleteObject(b);
@@ -1090,6 +1152,7 @@ LRESULT CALLBACK ApolloDesktop::ToggleProc(HWND window, UINT message, WPARAM w, 
             Gdiplus::SolidBrush knob(Gdiplus::Color(255, GetRValue(dot), GetGValue(dot), GetBValue(dot)));
             g.FillEllipse(&knob, x, y, size, size);
         }
+        frame.Present();
         if (message == WM_PAINT)
             EndPaint(window, &paint);
         return 0;
@@ -1135,6 +1198,11 @@ LRESULT CALLBACK ApolloDesktop::ComboProc(HWND window, UINT message, WPARAM w, L
         auto dc = message == WM_PAINT ? BeginPaint(window, &paint) : reinterpret_cast<HDC>(w);
         RECT r{};
         GetClientRect(window, &r);
+        ControlFrame frame(dc, r);
+        dc = frame.Dc();
+        auto background = CreateSolidBrush(Surface);
+        FillRect(dc, &r, background);
+        DeleteObject(background);
         DrawRound(dc, r, Surface, GetFocus() == window ? Gold : Edge, self->S(8));
         const int selected = static_cast<int>(SendMessageW(window, CB_GETCURSEL, 0, 0));
         wchar_t value[256]{};
@@ -1144,6 +1212,7 @@ LRESULT CALLBACK ApolloDesktop::ComboProc(HWND window, UINT message, WPARAM w, L
         self->Text(dc, value, 12, 0, width - 50, height, 0, Ink);
         self->Text(dc, L"\uE70D", width - 30, 0, 18, height, 5, Secondary,
                    DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+        frame.Present();
         if (message == WM_PAINT)
             EndPaint(window, &paint);
         return 0;
@@ -1175,6 +1244,7 @@ void ApolloDesktop::TrayMenu()
     HMENU menu = CreatePopupMenu();
     AppendMenuW(menu, MF_STRING, Restore, T(L"显示窗口", L"Show window"));
     AppendMenuW(menu, MF_STRING, Settings, T(L"设置", L"Settings"));
+    AppendMenuW(menu, MF_STRING, Restart, T(L"重新启动", L"Restart"));
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, Exit, T(L"退出", L"Quit"));
     POINT point{};
@@ -1188,6 +1258,8 @@ void ApolloDesktop::TrayMenu()
         Show();
     if (command == Settings)
         Show(true);
+    if (command == Restart && actions_.restart)
+        actions_.restart();
     if (command == Exit && actions_.exit)
         actions_.exit();
 }

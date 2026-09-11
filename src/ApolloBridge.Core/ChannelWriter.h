@@ -77,7 +77,6 @@ class ChannelController
         std::optional<ChannelRequest> transition;
         std::chrono::steady_clock::time_point transitionAt;
         uint64_t metadataRevision = 0;
-        std::map<ChannelAddress, std::chrono::steady_clock::time_point> lastDispatch;
     };
     void Fail(const std::string &key, const std::string &message);
     void UpdateEpoch();

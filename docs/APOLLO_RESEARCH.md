@@ -1,5 +1,29 @@
 # Apollo Bridge research
 
+## Device subscription recovery — 2026-09-05
+
+After reinstalling UA drivers, the user reported that explicitly restoring
+control allowed real volume changes but the surface fader returned to its old
+position. Local logs show successful fader dispatches; they do not record enough
+per-property observation data to prove that the real engine lost subscriptions.
+Code inspection identifies a matching recovery gap: discovery refresh retained
+subscription paths even when device identity changed at the same paths.
+
+The observer now replaces its own read connection and subscriptions when fresh
+discovery detects a changed system identity. Applying control settings also
+requests subscription renewal, covering reconstructed objects with unchanged
+identity. Planned renewal has no reconnect backoff and publishes a new connection
+generation. Existing controller validation rebinds the active control selection;
+no old write is replayed. EUCON model/callback code and the 250 ms optimistic
+feedback interval are unchanged.
+
+The synthetic transport fixture can invalidate subscriptions without closing
+sockets. Regression coverage checks changed identity, explicit renewal with the
+same identity, actual fader readback after a write, feedback beyond 250 ms, and
+subsequent external adjustments. Release and Debug core/transport tests passed.
+Real driver-reinstall recovery and S3/Avid Control feedback still require user
+verification; the isolated build is `artifacts/uad-subscription-recovery`.
+
 Status: opt-in ordinary-channel control and independently locked control-room
 validation checkpoint, not a production controller. The chronological contracts
 below retain earlier read-only stages; the latest control-room contract supersedes

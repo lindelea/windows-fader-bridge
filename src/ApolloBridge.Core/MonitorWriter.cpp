@@ -26,7 +26,7 @@ std::optional<Json> MonitorWriteClient::ApplyRealtime(
 
     DrainReplies(0);
     client_.SendBytes(command);
-    DrainReplies(request.field == MonitorField::Level ? 0 : 5);
+    DrainReplies(0);
     return request.value;
 }
 
@@ -107,7 +107,6 @@ void MonitorController::Arm(const std::string &key, std::optional<double> ceilin
     std::lock_guard<std::mutex> lock(mutex_);
     epoch_ = 0;
     pending_.clear();
-    lastDispatch_.clear();
     error_.clear();
     epoch_ = queue_.Arm(snapshot, key, ceiling);
     wake_.notify_all();
@@ -118,7 +117,6 @@ void MonitorController::Disarm()
     epoch_ = 0;
     queue_.Disarm();
     pending_.clear();
-    lastDispatch_.clear();
     wake_.notify_all();
 }
 void MonitorController::Fail(const std::string &message)
@@ -219,9 +217,7 @@ Monitor MonitorController::Feedback(Monitor monitor)
 }
 void MonitorController::Run()
 {
-    constexpr auto liveWriteInterval = std::chrono::milliseconds(10);
     std::unique_ptr<MonitorWriteClient> client;
-    std::optional<Clock::time_point> replyCheckAt;
     uint64_t replyEpoch = 0;
     while (!stop_)
     {
@@ -229,41 +225,20 @@ void MonitorController::Run()
         uint64_t failureEpoch = 0;
         try
         {
-            if (client && replyCheckAt && Clock::now() >= *replyCheckAt)
+            if (client)
             {
                 failureEpoch = replyEpoch;
                 client->CheckRealtimeReplies();
-                replyCheckAt.reset();
             }
             Validate();
             {
                 std::unique_lock<std::mutex> lock(mutex_);
                 while (!stop_ && !request)
                 {
-                    const auto now = Clock::now();
-                    if (replyCheckAt && now >= *replyCheckAt)
-                        break;
-                    auto nextReady = Clock::time_point::max();
-                    request = queue_.TakeReady([&](const MonitorRequest &r) {
-                        if (r.field != MonitorField::Level)
-                            return true;
-                        const auto sent = lastDispatch_.find(r.field);
-                        if (sent == lastDispatch_.end())
-                            return true;
-                        const auto ready = sent->second + liveWriteInterval;
-                        if (now >= ready)
-                            return true;
-                        nextReady = ready;
-                        return false;
-                    });
+                    request = queue_.Take();
                     if (request)
                         break;
-                    auto wakeAt = now + std::chrono::milliseconds(50);
-                    if (queue_.Size() && nextReady != Clock::time_point::max())
-                        wakeAt = std::min(wakeAt, nextReady);
-                    if (replyCheckAt)
-                        wakeAt = std::min(wakeAt, *replyCheckAt);
-                    wake_.wait_until(lock, wakeAt);
+                    wake_.wait_for(lock, std::chrono::milliseconds(50));
                     break; // Revalidate monitor context and replies after every wait.
                 }
                 if (stop_)
@@ -274,6 +249,7 @@ void MonitorController::Run()
             if (!request)
                 continue;
             failureEpoch = request->epoch;
+            replyEpoch = request->epoch;
             if (!client)
             {
                 client = std::make_unique<MonitorWriteClient>(stop_, port_);
@@ -304,8 +280,6 @@ void MonitorController::Run()
                 if (queue_.Epoch() != request->epoch)
                     continue;
                 ++confirmed_;
-                if (request->field == MonitorField::Level)
-                    lastDispatch_[request->field] = Clock::now();
                 lastOperation_ =
                     std::string(FieldName(request->field)) + " dispatched=" + result->scalar +
                     " request=" + std::to_string(request->sequence) + " latency-ms=" +
@@ -317,21 +291,12 @@ void MonitorController::Run()
                     it->second = {request->sequence, *result, true, Clock::now()};
             }
 
-            // Never stall the writer after an audible change. The queue above
-            // limits only repeated main-level writes for this exact address.
-            if (request->field == MonitorField::Level)
-            {
-                client->CheckRealtimeReplies();
-                replyCheckAt = Clock::now() + liveWriteInterval;
-                replyEpoch = request->epoch;
-            }
-            else
-                replyCheckAt.reset();
+            replyEpoch = request->epoch;
+            client->CheckRealtimeReplies();
         }
         catch (const std::exception &e)
         {
             client.reset(); // never retry a possibly executed write
-            replyCheckAt.reset();
             std::lock_guard<std::mutex> lock(mutex_);
             if (failureEpoch && queue_.Epoch() == failureEpoch)
                 Fail(e.what());
