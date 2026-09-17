@@ -1093,7 +1093,7 @@ void EuconChannel::SetMediaState(const bool available, const bool playing,
     }
 }
 
-void EuconChannel::SetFaderNormalized(const float value)
+bool EuconChannel::SetFaderNormalized(const float value)
 {
     EuPrimitiveControl* primitive = nullptr;
     if (fader_.GetPrimitive(EuControlFader::kID_Slider, &primitive) == kERR_OK && primitive)
@@ -1106,10 +1106,15 @@ void EuconChannel::SetFaderNormalized(const float value)
             std::clamp(value, 0.0F, 1.0F) * static_cast<float>(kUnityIndex)));
         FB_TRACE("MOTOR_CMD track=%d value=%.4f index=%u", channelOrder_.load(),
             value, static_cast<unsigned>(index));
-        primitive->SetCurrentIndex(index);
+        const auto setResult = primitive->SetCurrentIndex(index);
         // Ensure an unchanged target is delivered after an overtravel callback.
-        primitive->Refresh();
+        const auto refreshResult = setResult == kERR_OK ? primitive->Refresh() : setResult;
+        FB_TRACE("MOTOR_RESULT track=%d index=%u set=%d refresh=%d",
+            channelOrder_.load(), static_cast<unsigned>(index),
+            static_cast<int>(setResult), static_cast<int>(refreshResult));
+        return setResult == kERR_OK && refreshResult == kERR_OK;
     }
+    return false;
 }
 
 void EuconChannel::SetKnobNormalized(const float value)
@@ -1391,12 +1396,27 @@ void EuconChannel::WriteMeterDb(EuBatchedMeterWriter& writer,
     }
 }
 
-void EuconChannel::OnPrimitiveCallback(const tEVT eventType, NEuCon::uint32,
+void EuconChannel::OnProcessorCallback(const tEVT eventType, NEuCon::uint32, void* data)
+{
+    if (eventType != kEVT_AttributeChange || !data) return;
+    const auto& change = *static_cast<const AttributeChangeData*>(data);
+    if (change.mAttributeKeyType != kATRIB_KEYTYPE_Int ||
+        change.mAttributeValueType != kATRIB_VALUETYPE_Int ||
+        change.mIntAttributeKey != kATRIBID_SurfaceIsVisible) return;
+    const bool visible = change.mIntAttributeValue != 0;
+    const bool previous = surfaceVisible_.exchange(visible);
+    if (visible && !previous) feedbackRefreshRequested_.store(true);
+    FB_TRACE("CHANNEL_VIS track=%d visible=%d previous=%d",
+        channelOrder_.load(), visible ? 1 : 0, previous ? 1 : 0);
+}
+
+void EuconChannel::OnPrimitiveCallback(const tEVT eventType, NEuCon::uint32 eventFlags,
     const NEuCon::uint32 controlId, const NEuCon::uint32 arrayMemberControlId,
     const NEuCon::uint32 primitiveId, EuPrimitiveControl* affectedPrimitive,
     const NEuCon::uint16 newValueIndex, void*)
 {
-    if (eventType != kEVT_PRIM_StateChange || !affectedPrimitive)
+    if (eventType != kEVT_PRIM_StateChange || !affectedPrimitive ||
+        (eventFlags & kPRIMITIVE_FORCE_UPDATE))
     {
         return;
     }

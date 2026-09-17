@@ -56,12 +56,12 @@ void WindowsSystemProcessor::SetSoloActive(const bool active)
 }
 
 void WindowsSystemProcessor::OnPrimitiveCallback(const tEVT eventType,
-    const NEuCon::uint32, const NEuCon::uint32 controlId, const NEuCon::uint32,
+    const NEuCon::uint32 eventFlags, const NEuCon::uint32 controlId, const NEuCon::uint32,
     const NEuCon::uint32, EuPrimitiveControl*, const NEuCon::uint16, void*)
 {
     // EUCON owns this callback thread. Queue only; Core Audio work is done by
     // NativeAudioController's owning MTA/MMCSS worker.
-    if (eventType == kEVT_PRIM_StateChange && controlId == ClearSoloId &&
+    if (eventType == kEVT_PRIM_StateChange && !(eventFlags & kPRIMITIVE_FORCE_UPDATE) && controlId == ClearSoloId &&
         clearSoloHandler_)
     {
         FB_TRACE("CLEAR_SOLO_SYSTEM");

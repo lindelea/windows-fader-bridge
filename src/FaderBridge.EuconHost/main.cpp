@@ -1,6 +1,7 @@
 #include "ApplicationShell.h"
 #include "DiagnosticLog.h"
 #include "../BridgeGlobalShortcut.h"
+#include "../../tests/FaderBridge.Eucon.Tests/FeedbackTests.h"
 
 #include <Windows.h>
 #include <shellapi.h>
@@ -71,6 +72,7 @@ void ActivateExistingInstance()
 
 int WINAPI wWinMain(const HINSTANCE instance, HINSTANCE, PWSTR, const int showCommand)
 {
+    if (HasArgument(L"--feedback-self-test")) return RunFeedbackTests();
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     SetCurrentProcessExplicitAppUserModelID(L"Lindelea.WindowsFaderBridge");
     WaitForRestartSource();

@@ -1,5 +1,5 @@
 #include <windows.h>
-#include "../BridgeProductVersion.h"
+#include "WindowsEuconProductVersion.h"
 #include "resource.h"
 
 IDI_APP_ICON ICON "assets\\WindowsFaderBridge.ico"

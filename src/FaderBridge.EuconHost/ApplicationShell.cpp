@@ -1,6 +1,6 @@
 #include "ApplicationShell.h"
 
-#include "../BridgeProductVersion.h"
+#include "WindowsEuconProductVersion.h"
 #include "DiagnosticLog.h"
 #include "resource.h"
 #include "WindowsCommandExecutor.h"
@@ -498,6 +498,10 @@ LRESULT ApplicationShell::HandleMessage(const UINT message, const WPARAM wParam,
     {
     case WM_CREATE:
         return OnCreate() ? 0 : -1;
+    case WM_ACTIVATE:
+        if (LOWORD(wParam) != WA_INACTIVE && host_)
+            host_->RequestSurfaceRefresh("window-activated");
+        break;
     case kSurfaceChangeMessage:
     {
         std::unique_ptr<SurfaceChange> change(reinterpret_cast<SurfaceChange*>(lParam));
@@ -523,6 +527,7 @@ LRESULT ApplicationShell::HandleMessage(const UINT message, const WPARAM wParam,
         if (wParam == kReturnToBackgroundTimerId)
         {
             KillTimer(window_, kReturnToBackgroundTimerId);
+            if (host_) host_->RequestSurfaceRefresh("summon-settled");
             // EuControl completes application recognition asynchronously. Apply
             // the user's requested final window state after that focus handoff
             // instead of only scheduling work when background return is on.

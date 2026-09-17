@@ -451,7 +451,7 @@ void WindowsCommandProcessor::SetMonoAudioEnabled(const bool enabled)
 }
 
 void WindowsCommandProcessor::OnPrimitiveCallback(const tEVT eventType,
-    const NEuCon::uint32,
+    const NEuCon::uint32 eventFlags,
     const NEuCon::uint32 controlId,
     const NEuCon::uint32 arrayMemberControlId,
     const NEuCon::uint32,
@@ -461,7 +461,7 @@ void WindowsCommandProcessor::OnPrimitiveCallback(const tEVT eventType,
 {
     // EUCON owns this callback thread. Queue only; all Windows work and all
     // EUCON feedback writes happen on their existing owning threads.
-    if (eventType != kEVT_PRIM_StateChange)
+    if (eventType != kEVT_PRIM_StateChange || (eventFlags & kPRIMITIVE_FORCE_UPDATE))
     {
         return;
     }

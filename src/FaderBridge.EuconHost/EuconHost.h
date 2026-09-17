@@ -37,6 +37,7 @@ public:
     explicit FaderBridgeNode(HWND notificationWindow) : notificationWindow_(notificationWindow) {}
     void OnCallback(tEVT eventType, void* hidden, void* shown, void*, int&) override;
     bool ConsumeRefreshRequest() noexcept { return refreshRequested_.exchange(false); }
+    void RequestRefresh() noexcept { refreshRequested_.store(true); }
 
 private:
     HWND notificationWindow_ = nullptr;
@@ -58,6 +59,7 @@ public:
     bool HandleSurfaceChange(const SurfaceChange& change);
     bool SelectTrack(const std::wstring& trackKey);
     void FlushPendingMotors();
+    void RequestSurfaceRefresh(const char* reason);
 
 private:
     struct ChannelCache

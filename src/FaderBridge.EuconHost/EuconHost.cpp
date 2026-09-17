@@ -436,8 +436,8 @@ void EuconHost::SetFaderFromWindows(TrackState& track, const float volume)
         return;
     }
 
-    track.channel->SetFaderNormalized(volume);
-    cache.lastMotorIndex = index;
+    if (track.channel->SetFaderNormalized(volume))
+        cache.lastMotorIndex = index;
 }
 
 void EuconHost::ScheduleFaderFromWindows(TrackState& track, const float volume)
@@ -875,6 +875,13 @@ EuconHost::~EuconHost()
     EuConManager::Destroy();
 }
 
+void EuconHost::RequestSurfaceRefresh(const char* reason)
+{
+    if (!node_) return;
+    node_->RequestRefresh();
+    FB_TRACE("SURFACE_SYNC_REQUEST reason=%s", reason);
+}
+
 int EuconHost::ApplyAudioFrame(const AudioFrame& frame)
 {
     if (!ready_)
@@ -887,7 +894,18 @@ int EuconHost::ApplyAudioFrame(const AudioFrame& frame)
     commandProcessor_->SetSoloActive(frame.anySolo);
     systemProcessor_->SetSoloActive(frame.anySolo);
     const auto now = std::chrono::steady_clock::now();
-    const auto fullRefresh = node_->ConsumeRefreshRequest();
+    for (const auto& track : tracks_)
+        if (track->channel->ConsumeFeedbackRefresh())
+            RequestSurfaceRefresh("channel-visible");
+    // Preserve recovery across pending writes and touches. The current frame
+    // still reconciles them normally; recovery uses the next settled frame.
+    const bool busy = std::any_of(tracks_.begin(), tracks_.end(), [](const auto& track) {
+        return track->channel->FaderTouched() || track->cache.volumePending ||
+            track->cache.panPending || track->cache.mutePending || track->cache.motorDispatchPending;
+    });
+    const auto fullRefresh = !busy && node_->ConsumeRefreshRequest();
+    if (fullRefresh)
+        for (const auto& track : tracks_) track->cache.lastMotorIndex = -1;
     EuBatchedMeterWriter meterWriter(*node_);
     std::vector<EuconChannel::RouteOption> outputRoutes;
     std::vector<EuconChannel::RouteOption> inputRoutes;
@@ -965,7 +983,7 @@ int EuconHost::ApplyAudioFrame(const AudioFrame& frame)
             channel.SetSelected(selected);
             cache.selected = selected;
         }
-        if (selected && strip.role == AudioStripRole::Application)
+        if ((selected || fullRefresh) && strip.role == AudioStripRole::Application)
         {
             RefreshApplicationControls(*track, fullRefresh);
         }
@@ -1058,6 +1076,11 @@ int EuconHost::ApplyAudioFrame(const AudioFrame& frame)
             cache.muted = strip.muted;
         }
         cache.active = true;
+    }
+    if (fullRefresh)
+    {
+        const auto result = node_->SyncNode();
+        FB_TRACE("SURFACE_SYNC_COMPLETE tracks=%d result=%d", activeCount, static_cast<int>(result));
     }
     return activeCount;
 }

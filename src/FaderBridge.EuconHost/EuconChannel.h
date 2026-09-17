@@ -68,7 +68,10 @@ public:
                  const std::wstring& channelType = L"Audio");
     ~EuconChannel() override;
 
-    void SetFaderNormalized(float value);
+    bool SetFaderNormalized(float value);
+    bool FaderTouched() const noexcept { return faderTouched_.load(); }
+    bool ConsumeFeedbackRefresh() noexcept { return feedbackRefreshRequested_.exchange(false); }
+    void OnProcessorCallback(tEVT eventType, NEuCon::uint32 eventFlags, void* data) override;
     void SetKnobNormalized(float value);
     void SetPan(float value);
     void SetName(const std::wstring& value);
@@ -102,6 +105,8 @@ public:
         NEuCon::uint16 newValueIndex, void* callbackEventData = nullptr) override;
 
 private:
+    std::atomic<bool> surfaceVisible_ = false;
+    std::atomic<bool> feedbackRefreshRequested_ = false;
     enum ControlId : NEuCon::uint32
     {
         FaderId = 1,
