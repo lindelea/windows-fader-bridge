@@ -1,5 +1,5 @@
 #define ProductName "Windows Fader Bridge for EUCON"
-#define ProductVersion "1.0.1"
+#define ProductVersion "1.0.2"
 #define ProductExe "WindowsFaderBridge.exe"
 #define ProductRepo "https://github.com/lindelea/windows-fader-bridge-eucon"
 

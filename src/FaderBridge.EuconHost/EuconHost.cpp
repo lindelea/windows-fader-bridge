@@ -723,7 +723,13 @@ void EuconHost::ReconcileChannelTopology(const AudioFrame& frame)
     {
         return left->route->channelOrder.load() < right->route->channelOrder.load();
     });
-    node_->Thaw();
+    const auto thawResult = node_->Thaw();
+    FB_TRACE("EUCON_TOPOLOGY_THAW tracks=%u result=%d",
+        static_cast<unsigned>(tracks_.size()), static_cast<int>(thawResult));
+    // A retained track can remain visible while its surface assignment changes.
+    // Recover unchanged motor targets without depending on a visibility edge.
+    // ApplyAudioFrame keeps this request pending until touches/writes settle.
+    RequestSurfaceRefresh("channel-topology-changed");
 }
 
 void FaderBridgeNode::OnCallback(const tEVT eventType, void* hidden, void* shown, void*, int&)

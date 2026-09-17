@@ -44,3 +44,36 @@ meters and touch protection on S3 and Avid Control. Pending verification.
 - Prepared for the Windows EUCON v1.0.1 patch release after local runtime
   validation. Physical S3 and Avid Control verification remains part of the
   release acceptance record.
+
+## Channel-list recovery follow-up (2026-09-17)
+
+Concepts: processor lifecycle and application-to-surface feedback after channel
+addition, removal or reordering. Read guide 3.6.1-3.6.2, 7.1-7.5, 12.4, 12.10
+and 12.14; EuNode Freeze/Thaw/SyncNode declarations, visibility attributes,
+EuConIO and EuConApp ExTop, and the ChannelVisibility FAQ.
+
+Keep the application node and retained channel processors alive. The owner
+thread brackets a batch of topology changes with one Freeze/Thaw. Visibility
+describes whether a track is present on a surface, not whether it has been
+reassigned to another physical strip: an existing visible track need not have
+a new false-to-true transition. After Thaw, explicitly request the existing
+one-shot full feedback recovery. Log the Thaw return code. The recovery remains
+pending through active touches and pending writes, then republishes current
+audio values and calls SyncNode. Do not set visibility attributes ourselves,
+reset touch state, write audio values, rebuild the node or add a periodic timer.
+
+This addresses a missing host recovery trigger, not a proven SDK defect.
+Physical verification: keep an input at 100%, add/remove an audio application,
+and check retained faders and labels on S3 and Avid Control. Repeat while a
+fader is touched and verify recovery after release. Verification pending.
+
+Local candidate validation: isolated build and existing unregistered SDK
+feedback regression passed. A two-second PCM-zero test session added a fifth
+track to the four-track live model, then exited. Both 4-to-5 and 5-to-4 topology
+changes produced the new recovery request, republished the unchanged input
+fader target (1.0000 / index 728), and completed SyncNode with result 0.
+All logged motor SetCurrentIndex/Refresh results were 0. No audio volume was
+changed by the test. The trace was retained in the local topology-recovery
+backup directory. S3 motor position and Avid Control verification, including
+touch/release during application add/remove, still require user confirmation.
+This is a local candidate; the published v1.0.1 installer is unchanged.
