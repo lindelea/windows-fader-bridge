@@ -133,6 +133,13 @@ The dashboard names the display source to distinguish clock from media time.
 - Windows is authoritative for LEDs and motor feedback. Brief pending-write
   reconciliation handles in-flight audio snapshots; it expires and must not
   hide an external Windows update indefinitely.
+- With touch protection enabled, a pitch-bend packet received without a touch
+  never changes Windows audio. If that packet disagrees with the cached Windows
+  target, wait 40 ms for a possibly reordered touch packet and then reassert the
+  authoritative motor position. A matching motor echo remains silent, and a
+  touch arriving during the guard window cancels correction. This repairs a
+  controller-side position drop without periodic motor traffic or a device-name
+  branch.
 - Only active logical tracks receive meaningful controls. The visible Mackie
   order is dense: offline identities are removed and new identities append.
   While any fader is touched, topology is frozen and offline targets become

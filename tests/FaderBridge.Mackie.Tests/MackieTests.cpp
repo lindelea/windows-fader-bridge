@@ -269,8 +269,21 @@ void IdleClock()
 void Interaction()
 {
     Harness h;
+    h.surface.Feedback(900, true); h.output.clear();
     h.surface.Input(Raw(Fader(0, .8F)), 1000);
     Check(h.actions.empty(), "motor echo without touch cannot write audio");
+    h.surface.Feedback(1039); Check(!h.HasFader(0), "touch guard waits briefly before correcting an unexplained motor position");
+    h.surface.Feedback(1040); Check(h.Has(Fader(0, .5F)), "touch guard restores Windows truth after an unexplained motor position");
+    h.output.clear(); h.surface.Input(Raw(Fader(0, .5F)), 1050); h.surface.Feedback(1090);
+    Check(!h.HasFader(0), "matching motor echo does not create a feedback loop");
+    Harness master; auto masterTrack = Make(L"master", 1.F); masterTrack.application = false; masterTrack.master = true;
+    master.surface.Update({masterTrack}, 1100); master.surface.Feedback(1100, true); master.output.clear();
+    master.surface.Input(Raw(Fader(8, 0.F)), 1110);
+    Check(master.actions.empty(), "untouched master drift cannot change Windows volume");
+    master.surface.Feedback(1149); Check(!master.HasFader(8), "master drift correction preserves the touch-order guard");
+    master.surface.Feedback(1150); Check(master.Has(Fader(8, 1.F)), "master drift is restored to the Windows volume");
+    master.output.clear(); master.surface.Input(Raw(Fader(8, 0.F)), 1200); master.Touch(8);
+    master.surface.Feedback(1240); Check(!master.HasFader(8), "a real master touch cancels deferred motor correction");
     h.Touch(0); h.surface.Input(Raw(Fader(0, .8F)), 1001);
     Check(h.actions.size() == 1 && h.actions.back().kind == ActionKind::Volume && Near(h.actions.back().value, .8F), "touched fader writes");
     h.surface.Feedback(1001, true);

@@ -87,6 +87,10 @@ private:
     std::map<std::pair<std::wstring, ActionKind>, Pending> pending_;
     std::array<bool, 9> touched_{};
     std::array<std::wstring, 9> touchKey_{};
+    // A touch-guarded fader packet can be a motor echo or a controller-side
+    // position loss. Give a real touch message time to arrive, then restore
+    // the authoritative Windows position if the mismatch remains.
+    std::array<std::uint64_t, 9> faderCorrectionDue_{};
     std::array<bool, 128> pressed_{};
     std::array<std::uint64_t, 6> encoderDue_{};
     std::map<int, Bytes> cache_;

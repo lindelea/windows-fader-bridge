@@ -1,4 +1,5 @@
 #include "MackieSurface.h"
+#include "DiagnosticLog.h"
 #include <cstdio>
 
 namespace mackie
@@ -101,6 +102,7 @@ void Surface::ResetConnection()
     selectPressKey_.clear(); selectPressNote_ = -1;
     touched_.fill(false);
     touchKey_.fill({});
+    faderCorrectionDue_.fill(0);
     pressed_.fill(false);
     encoderDue_.fill(0);
     ReconcileOrder();
@@ -175,7 +177,25 @@ void Surface::Input(std::uint32_t raw, std::uint64_t now)
     const int a = (raw >> 8) & 127, b = (raw >> 16) & 127;
     if (type == 0xE0 && channel <= Master)
     {
-        if (RequireTouch && !touched_[channel]) { status_ = L"Ignored fader without touch"; return; }
+        if (RequireTouch && !touched_[channel])
+        {
+            const auto track = At(channel);
+            const auto received = FaderScalar(a | (b << 7));
+            const auto expected = track ? Value(*track, ActionKind::Volume, now) : 0.F;
+            if (track && FaderValue(received) != FaderValue(expected))
+            {
+                if (!faderCorrectionDue_[channel])
+                {
+                    faderCorrectionDue_[channel] = now + 40;
+                    FB_TRACE("MACKIE_FADER_DRIFT channel=%d received=%d expected=%d correction_due=%llu",
+                        channel, FaderValue(received), FaderValue(expected),
+                        static_cast<unsigned long long>(faderCorrectionDue_[channel]));
+                }
+            }
+            else faderCorrectionDue_[channel] = 0;
+            status_ = L"Ignored fader without touch";
+            return;
+        }
         const auto track = touched_[channel] ? Find(touchKey_[channel]) : At(channel);
         if (!track) return;
         if (!Touched() && selected_ != track->key) { selected_ = track->key; dirty_ = true; }
@@ -211,6 +231,7 @@ void Surface::Input(std::uint32_t raw, std::uint64_t now)
         const int fader = a - 0x68;
         if (down && !touched_[fader])
         {
+            faderCorrectionDue_[fader] = 0;
             selectPressKey_.clear(); selectPressNote_ = -1;
             touchKey_[fader] = At(fader) ? At(fader)->key : L"";
             // First touch chooses the target; additional simultaneous touches
@@ -301,6 +322,12 @@ void Surface::Feedback(std::uint64_t now, bool force)
         if (!touched_[i])
         {
             const auto v = track ? Value(*track, ActionKind::Volume, now) : 0.F;
+            if (faderCorrectionDue_[i] && now >= faderCorrectionDue_[i])
+            {
+                faderCorrectionDue_[i] = 0;
+                cache_.erase(i);
+                FB_TRACE("MACKIE_FADER_CORRECT channel=%d target=%d", i, FaderValue(v));
+            }
             Cached(i, Fader(i, v), force);
         }
         if (i == Master) break;
