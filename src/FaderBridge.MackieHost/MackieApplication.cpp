@@ -482,6 +482,7 @@ void MackieApplication::OnFrame(std::unique_ptr<AudioFrame> frame)
         t.defaultDevice = strip.isDefault; t.defaultSelectable = strip.defaultSelectable;
         t.master = strip.role == AudioStripRole::MasterOutput; t.application = strip.role == AudioStripRole::Application;
         t.canPan = strip.panAvailable; t.volume = strip.volume; t.pan = strip.pan; t.peakDb = strip.peakDb;
+        t.volumeValid = strip.volumeValid;
         if (!strip.meterDb.empty()) t.peakDb = *std::max_element(strip.meterDb.begin(), strip.meterDb.end());
         tracks.push_back(std::move(t));
     }

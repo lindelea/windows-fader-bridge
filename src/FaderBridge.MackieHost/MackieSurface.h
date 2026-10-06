@@ -18,6 +18,7 @@ struct Track
     std::wstring key, name;
     bool active = false, muted = false, solo = false, defaultDevice = false;
     bool defaultSelectable = false, master = false, application = false, canPan = false;
+    bool volumeValid = true;
     float volume = 0, pan = 0, peakDb = -120;
 };
 struct Pending
@@ -87,6 +88,7 @@ private:
     std::map<std::pair<std::wstring, ActionKind>, Pending> pending_;
     std::array<bool, 9> touched_{};
     std::array<std::wstring, 9> touchKey_{};
+    std::array<std::wstring, 9> motorKey_{};
     // A touch-guarded fader packet can be a motor echo or a controller-side
     // position loss. Give a real touch message time to arrive, then restore
     // the authoritative Windows position if the mismatch remains.

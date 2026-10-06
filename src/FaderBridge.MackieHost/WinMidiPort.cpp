@@ -160,6 +160,10 @@ void WinMidiPort::SendNow(const mackie::Bytes& bytes)
         DWORD packed = bytes[0] | (DWORD(bytes[1]) << 8);
         if (bytes.size() > 2) packed |= DWORD(bytes[2]) << 16;
         if (!Check(midiOutShortMsg(out_, packed), L"Send short")) { faulted_.store(true, std::memory_order_release); return; }
+        if ((bytes[0] & 0xF0) == 0xE0)
+            FB_TRACE("MIDI_TX_MOTOR port=%p channel=%u target=%u thread=%lu",
+                out_, static_cast<unsigned>(bytes[0] & 0x0F),
+                static_cast<unsigned>(bytes[1] | (bytes[2] << 7)), GetCurrentThreadId());
         if (Trace.load(std::memory_order_relaxed)) FB_TRACE("MIDI_TX short=%06lX", packed);
     }
     else

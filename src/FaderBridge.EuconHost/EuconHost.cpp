@@ -424,17 +424,21 @@ EuconHost::TrackState* EuconHost::FindTrack(const std::wstring& key) noexcept
 
 void EuconHost::SetFaderFromWindows(TrackState& track, const float volume)
 {
-    if (!track.channel)
+    if (!track.channel || track.channel->FaderFeedbackBusy())
     {
         return;
     }
     auto& cache = track.cache;
     const auto index = static_cast<int>(std::lround(
         std::clamp(volume, 0.0F, 1.0F) * static_cast<float>(kUnityFaderIndex)));
-    if (cache.lastMotorIndex == index)
+    const auto modelIndex = track.channel->FaderIndex();
+    if (cache.lastMotorIndex == index && modelIndex == index)
     {
         return;
     }
+    if (cache.lastMotorIndex == index && modelIndex != index)
+        FB_TRACE("MOTOR_MODEL_RECOVER track=%d model=%d target=%d",
+            track.route->channelOrder.load(), modelIndex, index);
 
     if (track.channel->SetFaderNormalized(volume))
         cache.lastMotorIndex = index;
@@ -600,7 +604,9 @@ std::unique_ptr<EuconHost::TrackState> EuconHost::CreateTrack(const int channelO
         std::move(appActionHandler),
         EuconTrackType(strip.role),
         strip.sortGroup == 0 ? L"Output" : strip.sortGroup == 1 ? L"Input" : L"Audio");
-    track->channel->SetMuted(false);
+    if (!track->channel->InitializeAudioState(strip.volume, strip.pan, strip.muted))
+        return nullptr;
+    track->cache.lastMotorIndex = track->channel->FaderIndex();
     track->channel->SetSoloed(strip.soloed);
     track->channel->SetSelected(strip.key == selectedTrackKey_);
     track->channel->SetRecordArmed(strip.isDefault);
@@ -663,7 +669,9 @@ void EuconHost::ReconcileChannelTopology(const AudioFrame& frame)
     // The processors are the application's virtual tracks. Only real Windows
     // applications are registered; EuControl owns physical-strip assignment,
     // banking and layouts across the resulting list.
-    node_->Freeze();
+    const auto freezeResult = node_->Freeze();
+    FB_TRACE("EUCON_TOPOLOGY_FREEZE result=%d", static_cast<int>(freezeResult));
+    if (freezeResult != kERR_OK) return;
 
     for (auto iterator = tracks_.begin(); iterator != tracks_.end();)
     {
@@ -678,7 +686,9 @@ void EuconHost::ReconcileChannelTopology(const AudioFrame& frame)
             (*iterator)->route->audioSlot.store(-1, std::memory_order_release);
             FB_TRACE("EUCON_TRACK_REMOVE order=%d",
                 (*iterator)->route->channelOrder.load());
-            node_->UnregisterProcessor(*(*iterator)->channel);
+            const auto unregisterResult = node_->UnregisterProcessor(*(*iterator)->channel);
+            FB_TRACE("EUCON_TRACK_UNREGISTER result=%d", static_cast<int>(unregisterResult));
+            if (unregisterResult != kERR_OK) { ++iterator; continue; }
             iterator = tracks_.erase(iterator);
         }
         else
@@ -695,7 +705,11 @@ void EuconHost::ReconcileChannelTopology(const AudioFrame& frame)
         if (!track)
         {
             auto added = CreateTrack(order, strip);
-            node_->RegisterProcessor(*added->channel);
+            if (!added) { FB_TRACE("EUCON_TRACK_INIT_FAILED order=%d", order); continue; }
+            const auto registerResult = node_->RegisterProcessor(*added->channel);
+            FB_TRACE("EUCON_TRACK_REGISTER order=%d result=%d initial=%.4f index=%d",
+                order, static_cast<int>(registerResult), strip.volume, added->channel->FaderIndex());
+            if (registerResult != kERR_OK) continue;
             added->channel->PostRegisterMeterInitialization(
                 frame.monoAudioEnabled, EuconMeterRoles(strip));
             FB_TRACE("EUCON_TRACK_ADD order=%d slot=%d color=%06X", order, strip.slot,
@@ -715,6 +729,7 @@ void EuconHost::ReconcileChannelTopology(const AudioFrame& frame)
         if (track->route->channelOrder.exchange(order) != order)
         {
             track->channel->SetOrder(order);
+            track->cache.feedbackRefreshPending = true;
             FB_TRACE("EUCON_TRACK_REORDER order=%d slot=%d", order, strip.slot);
         }
     }
@@ -726,10 +741,9 @@ void EuconHost::ReconcileChannelTopology(const AudioFrame& frame)
     const auto thawResult = node_->Thaw();
     FB_TRACE("EUCON_TOPOLOGY_THAW tracks=%u result=%d",
         static_cast<unsigned>(tracks_.size()), static_cast<int>(thawResult));
-    // A retained track can remain visible while its surface assignment changes.
-    // Recover unchanged motor targets without depending on a visibility edge.
-    // ApplyAudioFrame keeps this request pending until touches/writes settle.
-    RequestSurfaceRefresh("channel-topology-changed");
+    // Thaw publishes initialized new channels; reordered channels retain their
+    // own pending replay. Do not SyncNode/replay an unchanged Master merely
+    // because another application appeared.
 }
 
 void FaderBridgeNode::OnCallback(const tEVT eventType, void* hidden, void* shown, void*, int&)
@@ -902,11 +916,14 @@ int EuconHost::ApplyAudioFrame(const AudioFrame& frame)
     const auto now = std::chrono::steady_clock::now();
     for (const auto& track : tracks_)
         if (track->channel->ConsumeFeedbackRefresh())
-            RequestSurfaceRefresh("channel-visible");
+            track->cache.feedbackRefreshPending = true;
     // Preserve recovery across pending writes and touches. The current frame
     // still reconciles them normally; recovery uses the next settled frame.
-    const bool busy = std::any_of(tracks_.begin(), tracks_.end(), [](const auto& track) {
-        return track->channel->FaderTouched() || track->cache.volumePending ||
+    const bool unavailableVolume = std::any_of(frame.strips.begin(), frame.strips.end(), [](const auto& strip) {
+        return strip.active && !strip.volumeValid;
+    });
+    const bool busy = unavailableVolume || std::any_of(tracks_.begin(), tracks_.end(), [](const auto& track) {
+        return track->channel->FaderFeedbackBusy() || track->cache.volumePending ||
             track->cache.panPending || track->cache.mutePending || track->cache.motorDispatchPending;
     });
     const auto fullRefresh = !busy && node_->ConsumeRefreshRequest();
@@ -949,6 +966,14 @@ int EuconHost::ApplyAudioFrame(const AudioFrame& frame)
         track->route->audioSlot.store(strip.slot, std::memory_order_release);
         auto& channel = *track->channel;
         auto& cache = track->cache;
+        const bool channelSettled = strip.volumeValid && !channel.FaderFeedbackBusy() && !cache.volumePending &&
+            !cache.panPending && !cache.mutePending && !cache.motorDispatchPending;
+        const bool refreshChannel = fullRefresh || (cache.feedbackRefreshPending && channelSettled);
+        if (refreshChannel)
+        {
+            cache.feedbackRefreshPending = false;
+            cache.lastMotorIndex = -1;
+        }
         const auto order = track->route->channelOrder.load();
         ++activeCount;
         cache.focusProcessIds = strip.focusProcessIds;
@@ -968,84 +993,91 @@ int EuconHost::ApplyAudioFrame(const AudioFrame& frame)
                 strip.sortGroup == 0 ? L"Output" : strip.sortGroup == 1 ? L"Input" : L"Audio");
             cache.trackType = trackType;
         }
-        if (!cache.active || fullRefresh || cache.name != strip.name)
+        if (!cache.active || refreshChannel || cache.name != strip.name)
         {
             channel.SetName(strip.name);
             cache.name = strip.name;
         }
-        if (!cache.active || fullRefresh || cache.isDefault != strip.isDefault)
+        if (!cache.active || refreshChannel || cache.isDefault != strip.isDefault)
         {
             channel.SetRecordArmed(strip.isDefault);
             cache.isDefault = strip.isDefault;
         }
-        if (!cache.active || fullRefresh || cache.soloed != strip.soloed)
+        if (!cache.active || refreshChannel || cache.soloed != strip.soloed)
         {
             channel.SetSoloed(strip.soloed);
             cache.soloed = strip.soloed;
         }
         const auto selected = strip.key == selectedTrackKey_;
-        if (!cache.active || fullRefresh || cache.selected != selected)
+        if (!cache.active || refreshChannel || cache.selected != selected)
         {
             channel.SetSelected(selected);
             cache.selected = selected;
         }
-        if ((selected || fullRefresh) && strip.role == AudioStripRole::Application)
+        if ((selected || refreshChannel) && strip.role == AudioStripRole::Application)
         {
-            RefreshApplicationControls(*track, fullRefresh);
+            RefreshApplicationControls(*track, refreshChannel);
         }
 
-        const auto volumeMatchesPending = cache.volumePending &&
-            std::fabs(strip.volume - cache.requestedVolume) <= kPendingMatch;
-        if (!cache.active || volumeMatchesPending ||
-            std::fabs(strip.volume - cache.volume) > kVolumeDifference)
+        if (strip.volumeValid)
         {
-            FB_TRACE("AUDIO_FRAME track=%d slot=%d value=%.4f old=%.4f pending=%d match=%d",
-                order, strip.slot, strip.volume, cache.volume,
-                cache.volumePending ? 1 : 0, volumeMatchesPending ? 1 : 0);
-        }
-        const auto windowsVolumeChanged =
-            std::fabs(strip.volume - cache.volume) > kVolumeDifference;
-        if (cache.volumePending && cache.pendingVolumeKind == 1 && windowsVolumeChanged)
-        {
-            // Encoder writes can be superseded faster than CoreAudio reports
-            // them. Forward confirmed Windows values immediately.
-            FB_TRACE("MOTOR_FROM_WINDOWS_EVENT track=%d slot=%d value=%.4f match=%d",
-                order, strip.slot, strip.volume, volumeMatchesPending ? 1 : 0);
-            if (volumeMatchesPending)
+            const auto volumeMatchesPending = cache.volumePending &&
+                std::fabs(strip.volume - cache.requestedVolume) <= kPendingMatch;
+            if (!cache.active || volumeMatchesPending ||
+                std::fabs(strip.volume - cache.volume) > kVolumeDifference)
             {
-                cache.motorDispatchPending = false;
+                FB_TRACE("AUDIO_FRAME track=%d slot=%d value=%.4f old=%.4f pending=%d match=%d",
+                    order, strip.slot, strip.volume, cache.volume,
+                    cache.volumePending ? 1 : 0, volumeMatchesPending ? 1 : 0);
+            }
+            const auto windowsVolumeChanged =
+                std::fabs(strip.volume - cache.volume) > kVolumeDifference;
+            if (cache.volumePending && cache.pendingVolumeKind == 1 && windowsVolumeChanged)
+            {
+                // Encoder writes can be superseded faster than CoreAudio reports
+                // them. Forward confirmed Windows values immediately.
+                FB_TRACE("MOTOR_FROM_WINDOWS_EVENT track=%d slot=%d value=%.4f match=%d",
+                    order, strip.slot, strip.volume, volumeMatchesPending ? 1 : 0);
+                if (volumeMatchesPending)
+                {
+                    cache.motorDispatchPending = false;
+                    SetFaderFromWindows(*track, strip.volume);
+                }
+                else
+                {
+                    ScheduleFaderFromWindows(*track, strip.volume);
+                }
+                cache.volume = strip.volume;
+            }
+            else if (volumeMatchesPending && cache.pendingVolumeKind == 1)
+            {
+                FB_TRACE("MOTOR_FROM_WINDOWS_ACK_UNCHANGED track=%d slot=%d value=%.4f",
+                    order, strip.slot, strip.volume);
+            }
+            if (volumeMatchesPending || (cache.volumePending && now >= cache.volumeHoldUntil))
+            {
+                cache.volumePending = false;
+            }
+            if (!cache.volumePending &&
+                (!cache.active || refreshChannel || std::fabs(strip.volume - cache.volume) > kVolumeDifference))
+            {
+                // A matching pending value acknowledges this surface's own write.
+                // Only initial state and external Windows changes drive surfaces.
+                if (!volumeMatchesPending)
+                {
+                    channel.SetKnobNormalized(strip.volume);
+                }
+                cache.volume = strip.volume;
+            }
+            else if (volumeMatchesPending)
+            {
+                cache.volume = strip.volume;
+            }
+            // Read-only consistency check: a last-sent cache is not confirmation
+            // that the SDK still holds that index. Write only on a mismatch/replay,
+            // outside touch/release-tail and in-flight Windows/motor writes.
+            if (!cache.volumePending && !cache.motorDispatchPending)
                 SetFaderFromWindows(*track, strip.volume);
-            }
-            else
-            {
-                ScheduleFaderFromWindows(*track, strip.volume);
-            }
-            cache.volume = strip.volume;
-        }
-        else if (volumeMatchesPending && cache.pendingVolumeKind == 1)
-        {
-            FB_TRACE("MOTOR_FROM_WINDOWS_ACK_UNCHANGED track=%d slot=%d value=%.4f",
-                order, strip.slot, strip.volume);
-        }
-        if (volumeMatchesPending || (cache.volumePending && now >= cache.volumeHoldUntil))
-        {
-            cache.volumePending = false;
-        }
-        if (!cache.volumePending &&
-            (!cache.active || fullRefresh || std::fabs(strip.volume - cache.volume) > kVolumeDifference))
-        {
-            // A matching pending value acknowledges this surface's own write.
-            // Only initial state and external Windows changes drive surfaces.
-            if (!volumeMatchesPending)
-            {
-                SetFaderFromWindows(*track, strip.volume);
-                channel.SetKnobNormalized(strip.volume);
-            }
-            cache.volume = strip.volume;
-        }
-        else if (volumeMatchesPending)
-        {
-            cache.volume = strip.volume;
         }
 
         const auto panMatchesPending = cache.panPending &&
@@ -1055,7 +1087,7 @@ int EuconHost::ApplyAudioFrame(const AudioFrame& frame)
             cache.panPending = false;
         }
         if (strip.panAvailable && !cache.panPending &&
-            (!cache.active || fullRefresh ||
+            (!cache.active || refreshChannel ||
                 std::fabs(strip.pan - cache.pan) > kPanDifference))
         {
             FB_TRACE("PAN_FROM_WINDOWS track=%d slot=%d value=%.4f", order,
@@ -1076,7 +1108,7 @@ int EuconHost::ApplyAudioFrame(const AudioFrame& frame)
         {
             cache.mutePending = false;
         }
-        if (!cache.mutePending && (!cache.active || fullRefresh || strip.muted != cache.muted))
+        if (!cache.mutePending && (!cache.active || refreshChannel || strip.muted != cache.muted))
         {
             channel.SetMuted(strip.muted);
             cache.muted = strip.muted;

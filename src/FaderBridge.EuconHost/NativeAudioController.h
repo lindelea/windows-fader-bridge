@@ -64,6 +64,8 @@ struct AudioStripState
     bool isDefault = false;
     bool soloed = false;
     bool panAvailable = false;
+    // A retained display value is not a fresh authoritative motor target.
+    bool volumeValid = true;
     float volume = 0.0F;
     // Windows exposes session channel balance rather than a routing panner.
     // -1 is hard left, 0 is center, and +1 is hard right.

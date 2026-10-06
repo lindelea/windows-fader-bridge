@@ -1,4 +1,5 @@
 #include "NativeAudioController.h"
+#include "AudioVolumeReadback.h"
 #include "DiagnosticLog.h"
 
 #include <Audioclient.h>
@@ -23,6 +24,7 @@
 #include <fstream>
 #include <map>
 #include <optional>
+#include <set>
 #include <sstream>
 #include <unordered_map>
 
@@ -1139,6 +1141,8 @@ struct NativeAudioController::Impl
         ComPtr<IAudioCaptureClient> captureMeterReader;
         bool captureMeterOpenAttempted = false;
         bool isDefault = false;
+        AudioVolumeReadback volumeReadback;
+        bool volumeReadFailed = false;
         std::wstring preferredVolumeSession;
         std::wstring preferredMuteSession;
         std::wstring outputRouteId;
@@ -1153,6 +1157,7 @@ struct NativeAudioController::Impl
     std::wstring sessionEndpointId;
     std::vector<AudioMeterRole> sessionMeterRoles;
     std::wstring endpointDiagnosticSignature;
+    int endpointQueryStatus = -1;
     std::array<Slot, StripCount> slots;
     std::array<unsigned long long, StripCount> appliedVolumeVersions{};
     std::array<unsigned long long, StripCount> appliedPanVersions{};
@@ -1589,7 +1594,7 @@ struct NativeAudioController::Impl
             ComPtr<IAudioMeterInformation> meter;
         };
 
-        const auto defaultId = [this](const EDataFlow flow)
+        const auto defaultId = [this](const EDataFlow flow, bool& valid)
         {
             std::wstring result;
             ComPtr<IMMDevice> device;
@@ -1599,11 +1604,13 @@ struct NativeAudioController::Impl
             {
                 result = raw;
                 CoTaskMemFree(raw);
+                valid = true;
             }
             return result;
         };
-        const auto defaultRender = defaultId(eRender);
-        const auto defaultCapture = defaultId(eCapture);
+        bool renderDefaultValid = false, captureDefaultValid = false;
+        const auto defaultRender = defaultId(eRender, renderDefaultValid);
+        const auto defaultCapture = defaultId(eCapture, captureDefaultValid);
 
         ComPtr<IMMDeviceCollection> collection;
         if (!enumerator || FAILED(enumerator->EnumAudioEndpoints(eAll, DEVICE_STATE_ACTIVE,
@@ -1617,14 +1624,17 @@ struct NativeAudioController::Impl
             return false;
         }
         std::map<std::wstring, EndpointDescription> available;
+        std::set<std::wstring> enumeratedIds;
+        bool enumerationComplete = true;
         for (UINT index = 0; index < count; ++index)
         {
             ComPtr<IMMDevice> device;
-            if (FAILED(collection->Item(index, &device))) continue;
+            if (FAILED(collection->Item(index, &device))) { enumerationComplete = false; continue; }
             LPWSTR rawId = nullptr;
-            if (FAILED(device->GetId(&rawId)) || !rawId) continue;
+            if (FAILED(device->GetId(&rawId)) || !rawId) { enumerationComplete = false; continue; }
             std::wstring id(rawId);
             CoTaskMemFree(rawId);
+            enumeratedIds.insert(id);
 
             ComPtr<IMMEndpoint> endpointInfo;
             EDataFlow flow = eAll;
@@ -1667,6 +1677,16 @@ struct NativeAudioController::Impl
             available.emplace(id, std::move(description));
         }
 
+        const int queryStatus = (renderDefaultValid ? 1 : 0) | (captureDefaultValid ? 2 : 0) |
+            (enumerationComplete ? 4 : 0) | (available.size() != enumeratedIds.size() ? 8 : 0);
+        if (queryStatus != endpointQueryStatus)
+        {
+            endpointQueryStatus = queryStatus;
+            FB_TRACE("ENDPOINT_QUERY_STATUS renderDefault=%d captureDefault=%d complete=%d activationMissing=%d",
+                renderDefaultValid ? 1 : 0, captureDefaultValid ? 1 : 0,
+                enumerationComplete ? 1 : 0, (queryStatus & 8) ? 1 : 0);
+        }
+
         for (auto& slot : slots)
         {
             if (slot.kind != SlotKind::RenderEndpoint && slot.kind != SlotKind::CaptureEndpoint)
@@ -1676,13 +1696,18 @@ struct NativeAudioController::Impl
             const auto found = available.find(slot.endpointId);
             if (found == available.end())
             {
+                // Failure to activate/read one enumerated device is not proof
+                // it was unplugged. Keep its established interface/identity.
+                if (!enumerationComplete || enumeratedIds.count(slot.endpointId)) continue;
                 slot = Slot{};
                 continue;
             }
             auto& source = found->second;
             slot.kind = source.kind;
             slot.name = source.name;
-            slot.isDefault = source.isDefault;
+            const bool defaultValid = source.kind == SlotKind::RenderEndpoint
+                ? renderDefaultValid : captureDefaultValid;
+            if (defaultValid) slot.isDefault = source.isDefault;
             slot.meterRoles = source.meterRoles;
             EnsureCaptureMeterStream(slot);
             // Preserve the established endpoint interfaces across polling
@@ -2153,10 +2178,18 @@ struct NativeAudioController::Impl
                     {
                         DrainCaptureMeterStream(slot);
                     }
-                    if (SUCCEEDED(slot.endpointVolume->GetMasterVolumeLevelScalar(&volume)))
-                    {
-                        strip.volume = volume;
-                    }
+                    const auto volumeResult = slot.endpointVolume->GetMasterVolumeLevelScalar(&volume);
+                    const bool volumeValid = slot.volumeReadback.Observe(SUCCEEDED(volumeResult), volume);
+                    if (slot.volumeReadFailed != !volumeValid)
+                        FB_TRACE("AUDIO_VOLUME_READ slot=%d valid=%d result=%08lX known=%d retained=%.4f",
+                            index, volumeValid ? 1 : 0, static_cast<unsigned long>(volumeResult),
+                            slot.volumeReadback.known ? 1 : 0, slot.volumeReadback.value);
+                    slot.volumeReadFailed = !volumeValid;
+                    strip.volumeValid = volumeValid;
+                    // Do not publish an invented initial position. A retained
+                    // endpoint keeps the last confirmed volume until recovery.
+                    if (!slot.volumeReadback.known) continue;
+                    strip.volume = slot.volumeReadback.value;
                     if (SUCCEEDED(slot.endpointVolume->GetMute(&muted)))
                     {
                         strip.muted = muted != FALSE;
@@ -2197,6 +2230,7 @@ struct NativeAudioController::Impl
                     AudioSessionState state = AudioSessionStateInactive;
                     float volume = 0.0F;
                     bool volumeValid = false;
+                    bool volumeFresh = false;
                     bool muted = false;
                     bool panValid = false;
                     float pan = 0.0F;
@@ -2216,9 +2250,12 @@ struct NativeAudioController::Impl
                     {
                         session.control->GetState(&observation.state);
                     }
-                    if (SUCCEEDED(session.volume->GetMasterVolume(&observation.volume)))
+                    if (SUCCEEDED(session.volume->GetMasterVolume(&observation.volume)) &&
+                        std::isfinite(observation.volume) && observation.volume >= 0.0F &&
+                        observation.volume <= 1.0F)
                     {
                         observation.volumeValid = true;
+                        observation.volumeFresh = true;
                         if (session.volumeObserved &&
                             std::fabs(observation.volume - session.lastObservedVolume) > 0.0005F)
                         {
@@ -2229,6 +2266,11 @@ struct NativeAudioController::Impl
                         }
                         session.lastObservedVolume = observation.volume;
                         session.volumeObserved = true;
+                    }
+                    else if (session.volumeObserved)
+                    {
+                        observation.volume = session.lastObservedVolume;
+                        observation.volumeValid = true;
                     }
                     BOOL muted = FALSE;
                     if (SUCCEEDED(session.volume->GetMute(&muted)))
@@ -2309,9 +2351,10 @@ struct NativeAudioController::Impl
 
                 if (selected != observations.end())
                 {
+                    strip.volumeValid = selected->volumeFresh;
                     if (selected->volumeValid)
                     {
-                        strip.volume = selected->volume;
+                        slot.volumeReadback.Observe(true, selected->volume);
                     }
                     if (selected->panValid)
                     {
@@ -2319,6 +2362,10 @@ struct NativeAudioController::Impl
                         strip.pan = selected->pan;
                     }
                 }
+                else strip.volumeValid = false;
+
+                if (!slot.volumeReadback.known) continue;
+                strip.volume = slot.volumeReadback.value;
 
                 auto selectedMute = observations.end();
                 if (!slot.preferredMuteSession.empty())

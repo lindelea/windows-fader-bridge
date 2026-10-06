@@ -1,4 +1,5 @@
 #include "EuconChannel.h"
+#include <Windows.h>
 
 #include "DiagnosticLog.h"
 #include "EuBatchedMeters.h"
@@ -1093,6 +1094,33 @@ void EuconChannel::SetMediaState(const bool available, const bool playing,
     }
 }
 
+bool EuconChannel::InitializeAudioState(const float volume, const float pan, const bool muted)
+{
+    // Populate the current snapshot before RegisterProcessor/Thaw can expose
+    // the new channel. A table's default index is not Windows audio state.
+    const bool initialized = SetFaderNormalized(volume);
+    SetKnobNormalized(volume);
+    SetPan(pan);
+    SetMuted(muted);
+    return initialized;
+}
+
+int EuconChannel::FaderIndex() const
+{
+    EuPrimitiveControl* primitive = nullptr;
+    NEuCon::uint16 index = 0;
+    if (fader_.GetPrimitive(EuControlFader::kID_Slider, &primitive) == kERR_OK && primitive &&
+        primitive->GetCurrentIndex(index) == kERR_OK)
+        return static_cast<int>(index);
+    return -1;
+}
+
+bool EuconChannel::FaderFeedbackBusy() const noexcept
+{
+    return FaderTouched() || MonotonicMilliseconds() <=
+        faderTouchReleaseDeadline_.load(std::memory_order_acquire);
+}
+
 bool EuconChannel::SetFaderNormalized(const float value)
 {
     EuPrimitiveControl* primitive = nullptr;
@@ -1106,6 +1134,7 @@ bool EuconChannel::SetFaderNormalized(const float value)
             std::clamp(value, 0.0F, 1.0F) * static_cast<float>(kUnityIndex)));
         FB_TRACE("MOTOR_CMD track=%d value=%.4f index=%u", channelOrder_.load(),
             value, static_cast<unsigned>(index));
+        expectedFaderIndex_.store(static_cast<int>(index), std::memory_order_release);
         const auto setResult = primitive->SetCurrentIndex(index);
         // Ensure an unchanged target is delivered after an overtravel callback.
         const auto refreshResult = setResult == kERR_OK ? primitive->Refresh() : setResult;
@@ -1177,6 +1206,7 @@ void EuconChannel::SetOrder(const int channelOrder)
 
 void EuconChannel::ApplyPendingFaderRebound()
 {
+    if (FaderFeedbackBusy()) return;
     if (faderReboundPending_.exchange(false))
     {
         SetFaderNormalized(1.0F);
@@ -1415,10 +1445,18 @@ void EuconChannel::OnPrimitiveCallback(const tEVT eventType, NEuCon::uint32 even
     const NEuCon::uint32 primitiveId, EuPrimitiveControl* affectedPrimitive,
     const NEuCon::uint16 newValueIndex, void*)
 {
-    if (eventType != kEVT_PRIM_StateChange || !affectedPrimitive ||
-        (eventFlags & kPRIMITIVE_FORCE_UPDATE))
+    if (eventType != kEVT_PRIM_StateChange || !affectedPrimitive)
     {
         return;
+    }
+    if (eventFlags & kPRIMITIVE_FORCE_UPDATE)
+    {
+        if (controlId == FaderId && primitiveId == EuControlFader::kID_Slider &&
+            static_cast<int>(newValueIndex) != expectedFaderIndex_.load(std::memory_order_acquire))
+            FB_TRACE("FADER_FORCED_STATE track=%d index=%u expected=%d thread=%lu",
+                channelOrder_.load(), static_cast<unsigned>(newValueIndex),
+                expectedFaderIndex_.load(), GetCurrentThreadId());
+        return; // Resynchronization is never an audio command.
     }
 
     if (controlId == FaderId && primitiveId == EuControlFader::kID_Slider)

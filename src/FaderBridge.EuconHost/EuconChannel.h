@@ -69,6 +69,9 @@ public:
     ~EuconChannel() override;
 
     bool SetFaderNormalized(float value);
+    bool InitializeAudioState(float volume, float pan, bool muted);
+    int FaderIndex() const;
+    bool FaderFeedbackBusy() const noexcept;
     bool FaderTouched() const noexcept { return faderTouched_.load(); }
     bool ConsumeFeedbackRefresh() noexcept { return feedbackRefreshRequested_.exchange(false); }
     void OnProcessorCallback(tEVT eventType, NEuCon::uint32 eventFlags, void* data) override;
@@ -212,6 +215,7 @@ private:
     NEuCon::uint32 panKnobMemberId_ = 0;
     std::atomic_bool faderReboundPending_ = false;
     std::atomic_bool faderTouched_ = false;
+    std::atomic<int> expectedFaderIndex_ = -1;
     std::atomic<unsigned long long> faderTouchReleaseDeadline_ = 0;
     std::atomic<int> lastMeterResult_ = -1;
     std::atomic_bool meterFallbackLogged_ = false;

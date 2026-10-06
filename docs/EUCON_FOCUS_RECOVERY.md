@@ -1,5 +1,13 @@
 # Windows EUCON feedback recovery
 
+Current policy (2026-10-06): the global replay described below is historical
+for ordinary topology changes and visibility transitions. New processors now
+receive confirmed audio state before registration; retained processors use
+scoped feedback recovery without replaying an unchanged Master. Explicit
+focus/attachment recovery still uses the documented node synchronization path.
+See [Windows fader topology recovery](WINDOWS_FADER_TOPOLOGY_RECOVERY.md) for
+the current implementation, regression evidence and pending hardware checks.
+
 2026-09-17 investigation: application switching reached WindowsFaderBridge in
 EuControl's log, while unchanged motor targets could be discarded by the host's
 lastMotorIndex cache even during fullRefresh. Attachment was the only explicit

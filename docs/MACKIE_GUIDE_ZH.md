@@ -1,6 +1,6 @@
 # Windows Fader Bridge for Mackie Control — 中文研究版指南
 
-当前应用版本：**v1.0.0**。
+当前应用版本：**v1.0.2**。
 
 ## 日常界面（2026-08-30 更新）
 

@@ -83,6 +83,7 @@ struct Fixture
         {
             key = strip->key; mackie::Track t; t.key = key; t.name = strip->name; t.active = true; t.application = true;
             t.volume = strip->volume; t.pan = strip->pan; t.canPan = strip->panAvailable; t.muted = strip->muted;
+            t.volumeValid = strip->volumeValid;
             surface.Update({t}, GetTickCount64()); surface.Feedback(GetTickCount64());
         }
         Sleep(5);
@@ -115,6 +116,7 @@ int main()
     {
         Fixture f;
         f.Until([&] { return f.Own() != nullptr; }, "discover own silent Windows session");
+        f.Until([&] { return f.Own()->volumeValid; }, "successful Windows session read is fresh, not cached fallback");
         f.Note(0x68, true); const auto bytes = mackie::Fader(0, .37F);
         f.surface.Input(bytes[0] | (bytes[1] << 8) | (bytes[2] << 16), GetTickCount64()); f.Note(0x68, false);
         f.Until([&] { return f.WindowsVolume(.37F) && std::abs(f.Own()->volume - .37F) < .002F; }, "MCU fader -> keyed queue -> actual Windows volume");

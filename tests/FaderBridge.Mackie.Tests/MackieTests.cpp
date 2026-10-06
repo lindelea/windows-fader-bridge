@@ -3,6 +3,7 @@
 #include "CommandCatalog.h"
 #include "Windows80Preset.h"
 #include "AudioTrackCommandQueue.h"
+#include "AudioVolumeReadback.h"
 #include "WindowsMediaTimeline.h"
 #include "MackieDisplayClock.h"
 #include "MackieJogInput.h"
@@ -493,6 +494,46 @@ void Identity()
 }
 void Feedback()
 {
+    AudioVolumeReadback readback;
+    Check(!readback.Observe(false, 0) && !readback.known, "failed initial read is unknown, not zero");
+    Check(readback.Observe(true, 1) && readback.known, "successful master read establishes truth");
+    Check(!readback.Observe(false, 0) && readback.value == 1, "failed read preserves confirmed 100 percent");
+    Check(!readback.Observe(true, std::numeric_limits<float>::quiet_NaN()) && readback.value == 1, "invalid float cannot drive motor");
+    Check(!readback.Observe(true, 2) && readback.value == 1, "invalid scalar cannot drive motor");
+    Check(readback.Observe(true, 0) && readback.value == 0, "real Windows zero is never suppressed");
+    readback = {};
+    Check(!readback.known, "replacement endpoint never inherits another endpoint's volume");
+
+    Harness topology;
+    auto master = Make(L"master", 1.F); master.master = true; master.application = false;
+    auto application = Make(L"application", .2F);
+    topology.surface.RestoreOrder({}); topology.surface.Update({master}, 1000);
+    topology.surface.Feedback(1000); topology.output.clear();
+    topology.surface.Update({master, application}, 1001); topology.surface.Feedback(1001);
+    Check(!topology.HasFader(0) && !topology.HasFader(8) && topology.Has(Fader(1, .2F)), "append updates new strip without replaying master motors");
+    topology.output.clear(); topology.surface.Select(application.key); topology.surface.Feedback(1002);
+    Check(!topology.HasFader(0) && !topology.HasFader(8), "selection does not replay unchanged master motors");
+    topology.output.clear(); topology.surface.Update({master}, 1003); topology.surface.Feedback(1003);
+    Check(!topology.HasFader(0) && !topology.HasFader(8) && topology.Has(Fader(1, 0)), "removal clears only removed slot, not master");
+    auto replacement = Make(L"new-master", 1.F); replacement.master = true;
+    topology.output.clear(); topology.surface.Update({replacement}, 1004); topology.surface.Feedback(1004);
+    Check(topology.Has(Fader(0, 1)) && topology.Has(Fader(8, 1)), "equal-volume identity replacement reasserts both bindings");
+    topology.output.clear(); topology.surface.InvalidateFeedback(); topology.surface.Feedback(1005);
+    Check(topology.HasFader(0) && topology.HasFader(8), "explicit feedback invalidation still restores unchanged motors");
+    topology.Touch(0); topology.output.clear();
+    topology.surface.Update({replacement, application}, 1006); topology.surface.Feedback(1006);
+    Check(!topology.HasFader(0) && !topology.HasFader(8), "append during touch cannot move touched or unchanged master motor");
+    topology.Touch(0, false); topology.output.clear(); topology.surface.Feedback(1007);
+    Check(topology.HasFader(0) && !topology.HasFader(8) && topology.HasFader(1), "release restores only affected/new bindings");
+
+    topology.Touch(0); topology.surface.Input(Raw(Fader(0, .6F)), 1010); topology.Touch(0, false);
+    replacement.volumeValid = false;
+    topology.surface.Update({replacement, application}, 1020); topology.output.clear(); topology.surface.Feedback(1300);
+    Check(!topology.HasFader(0) && !topology.HasFader(8), "failed read cannot drive cached old volume after a real gesture");
+    replacement.volumeValid = true; replacement.volume = .6F;
+    topology.surface.Update({replacement, application}, 1310); topology.surface.Feedback(1310);
+    Check(topology.Has(Fader(0, .6F)) && topology.Has(Fader(8, .6F)), "fresh read resumes feedback at actual gesture result");
+
     Harness h; h.surface.Feedback(1000, true); h.output.clear(); h.surface.Feedback(1001);
     Check(h.output.empty(), "unchanged feedback is silent before meter refresh");
     h.surface.Feedback(1029); Check(h.output.empty(), "meter packets wait for the next audio-frame interval");

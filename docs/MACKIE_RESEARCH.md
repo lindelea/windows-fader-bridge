@@ -178,6 +178,19 @@ check and selection of an MCU-compatible DAW mode are user hardware checks.
 
 ## Verification requirements
 
+### Master feedback follow-up — 2026-10-06
+
+The idle drift fix above only repairs a mismatching received fader packet; it
+cannot read a silent controller's actual motor position. The newer audit in
+[Windows fader topology/readback recovery](WINDOWS_FADER_TOPOLOGY_RECOVERY.md)
+separates transport evidence from hardware acceptance. It removes whole-bank
+motor replay on ordinary list/selection changes, compares stable motor bindings,
+and marks cached failed Windows reads as non-authoritative for motor feedback.
+Successful motor packets and touch/fader input now have quiet diagnostics even
+when full MIDI tracing is off. No new MIDI definitions or vendor branches.
+Pure, smoke and own-silent-session integration tests passed; the user's Master
+check is preliminary, and long-idle/cross-surface acceptance remains pending.
+
 Protocol tests must cover signed deltas, fader limits, button release/debounce,
 touch feedback exclusion, stable identities, automatic compaction, bank guards,
 master switching, pending-write expiry, LCD bounds, meter overload and malformed

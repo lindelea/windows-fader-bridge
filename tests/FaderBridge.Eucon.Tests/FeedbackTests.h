@@ -6,6 +6,7 @@
 #include "WindowsCommandProcessor.h"
 #include "EuConManager.h"
 #include "EuPrimitiveControl.h"
+#include "AudioVolumeReadback.h"
 #include <stdexcept>
 
 // Unregistered SDK models only: no audio engine, commands, or surface assignment.
@@ -48,6 +49,20 @@ inline int RunFeedbackTests()
         for (auto* control : controls)
             if (auto* candidate = dynamic_cast<EuControlFader*>(control)) fader = candidate;
         require(fader != nullptr);
+        EuPrimitiveControl* slider = nullptr;
+        require(fader->GetPrimitive(EuControlFader::kID_Slider, &slider) == kERR_OK && slider);
+        require(channel.InitializeAudioState(1.0F, 0.0F, false));
+        require(channel.FaderIndex() == 728); // Ready before any node registration.
+        require(channel.InitializeAudioState(0.5F, 0.0F, true));
+        require(channel.FaderIndex() == 364);
+        require(slider->SetCurrentIndex(0) == kERR_OK);
+        require(channel.FaderIndex() == 0); // Detects divergence despite a last-sent target.
+        require(channel.SetFaderNormalized(0.5F) && channel.FaderIndex() == 364);
+        AudioVolumeReadback readback;
+        require(!readback.Observe(false, 0) && !readback.known);
+        require(readback.Observe(true, 1));
+        require(!readback.Observe(false, 0) && readback.value == 1);
+        require(readback.Observe(true, 0) && readback.value == 0);
         EuPrimitiveControl* mute = nullptr;
         require(fader->GetPrimitive(EuControlFader::kID_Mute, &mute) == kERR_OK && mute);
         channel.OnPrimitiveCallback(kEVT_PRIM_StateChange, kPRIMITIVE_FORCE_UPDATE,

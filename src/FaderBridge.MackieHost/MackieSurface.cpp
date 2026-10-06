@@ -102,6 +102,7 @@ void Surface::ResetConnection()
     selectPressKey_.clear(); selectPressNote_ = -1;
     touched_.fill(false);
     touchKey_.fill({});
+    motorKey_.fill({});
     faderCorrectionDue_.fill(0);
     pressed_.fill(false);
     encoderDue_.fill(0);
@@ -139,6 +140,8 @@ float Surface::Value(const Track& track, ActionKind kind, std::uint64_t now)
     const float actual = kind == ActionKind::Pan ? track.pan :
         (kind == ActionKind::Mute ? (track.muted ? 1.F : 0.F) : track.volume);
     const auto it = pending_.find({track.key, kind});
+    if (kind == ActionKind::Volume && !track.volumeValid && it != pending_.end() && it->second.until)
+        return it->second.target;
     return it == pending_.end() ? actual : it->second.Resolve(actual, now, kind == ActionKind::Pan ? .01F : .002F);
 }
 void Surface::Request(const Track& track, ActionKind kind, float value, std::uint64_t now)
@@ -177,6 +180,8 @@ void Surface::Input(std::uint32_t raw, std::uint64_t now)
     const int a = (raw >> 8) & 127, b = (raw >> 16) & 127;
     if (type == 0xE0 && channel <= Master)
     {
+        FB_TRACE("MACKIE_FADER_RX surface=%p channel=%d value=%d touch=%d",
+            this, channel, a | (b << 7), touched_[channel] ? 1 : 0);
         if (RequireTouch && !touched_[channel])
         {
             const auto track = At(channel);
@@ -229,6 +234,7 @@ void Surface::Input(std::uint32_t raw, std::uint64_t now)
     if (a >= 0x68 && a <= 0x70)
     {
         const int fader = a - 0x68;
+        FB_TRACE("MACKIE_TOUCH surface=%p channel=%d down=%d", this, fader, down ? 1 : 0);
         if (down && !touched_[fader])
         {
             faderCorrectionDue_[fader] = 0;
@@ -308,18 +314,21 @@ void Surface::Cached(int id, const Bytes& bytes, bool force)
 }
 void Surface::Feedback(std::uint64_t now, bool force)
 {
-    force = force || dirty_;
+    if (!haveSnapshot_) return;
+    // A changed list/selection requires prompt display comparison, not a
+    // broadcast motor/LED replay of otherwise unchanged state.
+    const bool repaint = force || dirty_;
     dirty_ = false;
     // Traditional DIN MIDI is bandwidth-limited. Keep slow display traffic
     // below motor/touch traffic; do not assume a fast USB-only controller.
-    const bool ringsDue = force || now >= ringDue_;
-    const bool lcdDue = force || now >= lcdDue_;
+    const bool ringsDue = repaint || now >= ringDue_;
+    const bool lcdDue = repaint || now >= lcdDue_;
     if (ringsDue) ringDue_ = now + 30;
     if (lcdDue) lcdDue_ = now + 200;
     for (int i = 0; i <= Master; ++i)
     {
         const auto track = At(i);
-        if (!touched_[i])
+        if (!touched_[i] && (!track || track->volumeValid))
         {
             const auto v = track ? Value(*track, ActionKind::Volume, now) : 0.F;
             if (faderCorrectionDue_[i] && now >= faderCorrectionDue_[i])
@@ -328,7 +337,14 @@ void Surface::Feedback(std::uint64_t now, bool force)
                 cache_.erase(i);
                 FB_TRACE("MACKIE_FADER_CORRECT channel=%d target=%d", i, FaderValue(v));
             }
-            Cached(i, Fader(i, v), force);
+            const auto key = track ? track->key : L"";
+            const bool bindingChanged = motorKey_[i] != key;
+            const auto packet = Fader(i, v);
+            if (force || bindingChanged || cache_.find(i) == cache_.end() || cache_[i] != packet)
+                FB_TRACE("MACKIE_MOTOR_TARGET surface=%p channel=%d key=%ls target=%d binding=%d force=%d",
+                    this, i, key.c_str(), FaderValue(v), bindingChanged ? 1 : 0, force ? 1 : 0);
+            Cached(i, packet, force || bindingChanged);
+            motorKey_[i] = key;
         }
         if (i == Master) break;
         Cached(20 + i, Led(i, track && track->defaultDevice), force);

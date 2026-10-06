@@ -65,6 +65,7 @@ private:
     struct ChannelCache
     {
         bool active = false;
+        bool feedbackRefreshPending = false;
         bool muted = false;
         bool volumePending = false;
         bool panPending = false;
