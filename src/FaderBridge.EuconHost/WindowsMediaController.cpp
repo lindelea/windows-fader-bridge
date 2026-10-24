@@ -1,4 +1,5 @@
 #include "WindowsMediaController.h"
+#include "WindowsMediaReadback.h"
 
 #include "DiagnosticLog.h"
 
@@ -103,19 +104,18 @@ struct WindowsMediaController::Impl
         const auto current = manager.GetCurrentSession();
         if (useSystemCurrentWhenEmpty && executablePath.empty() && packageFamilyName.empty())
             return current;
-        for (const auto& session : manager.GetSessions())
+        const auto sessions = manager.GetSessions();
+        if (!sessions) return nullptr;
+        for (const auto& session : sessions)
         {
+            if (!session) continue;
             const auto source = std::wstring(session.SourceAppUserModelId());
             auto score = MatchScore(source, executablePath, packageFamilyName) * 100;
             if (score == 0) continue;
             if (current && SessionKey(session) == SessionKey(current)) score += 50;
             try
             {
-                const auto status = session.GetPlaybackInfo().PlaybackStatus();
-                using Status = winrt::Windows::Media::Control::
-                    GlobalSystemMediaTransportControlsSessionPlaybackStatus;
-                if (status == Status::Playing) score += 30;
-                else if (status == Status::Paused) score += 10;
+                score += bridge::MediaPlaybackScore(session.GetPlaybackInfo());
             }
             catch (const winrt::hresult_error&)
             {
@@ -155,6 +155,12 @@ struct WindowsMediaController::Impl
         {
             const auto sharedCache = cache;
             auto operation = session.TryGetMediaPropertiesAsync();
+            if (!operation)
+            {
+                const std::scoped_lock lock(cache->mutex);
+                cache->metadata[key].pending = false;
+                return;
+            }
             operation.Completed([sharedCache, key](const auto& completed,
                 const winrt::Windows::Foundation::AsyncStatus status) noexcept
             {
@@ -262,60 +268,26 @@ WindowsMediaState WindowsMediaController::GetState(
         state.controlSession = std::make_shared<WindowsMediaSession>(WindowsMediaSession{session});
         state.sourceAppId = session.SourceAppUserModelId();
         const auto playback = session.GetPlaybackInfo();
-        const auto controls = playback.Controls();
-        state.playing = playback.PlaybackStatus() == winrt::Windows::Media::Control::
-            GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing;
-        state.canPlayPause = controls.IsPlayPauseToggleEnabled() ||
-            controls.IsPlayEnabled() || controls.IsPauseEnabled();
-        state.canPrevious = controls.IsPreviousEnabled();
-        state.canNext = controls.IsNextEnabled();
-        state.canStop = controls.IsStopEnabled();
-        state.canSeek = controls.IsPlaybackPositionEnabled();
-        state.canShuffle = controls.IsShuffleEnabled();
-        if (const auto shuffle = playback.IsShuffleActive())
+        bridge::ReadMediaPlayback(playback, state);
+        try
         {
-            state.shuffle = shuffle.Value();
+            const auto timeline = session.GetTimelineProperties();
+            bridge::ReadMediaTimeline<winrt::hresult_error>(timeline, state, includeTimeline,
+                winrt::clock::now().time_since_epoch().count(), [&]() -> std::optional<double> {
+                    if (playback)
+                        if (const auto rate = playback.PlaybackRate()) return rate.Value();
+                    return {};
+                });
         }
-        state.canRepeat = controls.IsRepeatEnabled();
-        if (const auto repeat = playback.AutoRepeatMode())
+        catch (const winrt::hresult_error& error)
         {
-            state.repeatMode = std::clamp(static_cast<int>(repeat.Value()), 0, 2);
-        }
-        const auto timeline = session.GetTimelineProperties();
-        const auto start = timeline.MinSeekTime();
-        const auto end = timeline.MaxSeekTime();
-        if (end > start)
-        {
-            state.hasPosition = true;
-            const auto position = std::clamp(timeline.Position(), start, end);
-            state.position = static_cast<float>(
-                static_cast<double>((position - start).count()) /
-                static_cast<double>((end - start).count()));
+            state.hasPosition = state.canSeek = false;
+            state.position = 0;
+            state.timeline = {};
+            FB_TRACE("MEDIA_TIMELINE hr=%08X", static_cast<unsigned>(error.code()));
         }
         impl_->ReadMetadata(session, state.title, state.artist);
         impl_->TraceCapabilities(state);
-        if (includeTimeline)
-        {
-            // Additive Mackie read path: preserve EUCON's existing seek/percent
-            // semantics, and never gate display-only time on seeking permission.
-            try
-            {
-                auto& time = state.timeline;
-                time.start = timeline.StartTime().count();
-                time.end = timeline.EndTime().count();
-                time.position = timeline.Position().count();
-                time.seekStart = start.count();
-                time.seekEnd = end.count();
-                time.updatedUtc = timeline.LastUpdatedTime().time_since_epoch().count();
-                time.sampledUtc = winrt::clock::now().time_since_epoch().count();
-                if (const auto rate = playback.PlaybackRate()) time.rate = rate.Value();
-                time.available = time.start >= 0 && time.end > time.start && time.position >= 0;
-            }
-            catch (const winrt::hresult_error&)
-            {
-                state.timeline = {}; // Optional display failure never removes controls.
-            }
-        }
     }
     catch (const winrt::hresult_error& error)
     {
@@ -355,7 +327,9 @@ bool WindowsMediaController::Execute(const WindowsMediaState& state,
             return false;
         }
         const auto playback = session.GetPlaybackInfo();
+        if (!playback) return false;
         const auto controls = playback.Controls();
+        if (!controls) return false;
         bool supported = false;
         switch (action)
         {
@@ -390,6 +364,7 @@ bool WindowsMediaController::Execute(const WindowsMediaState& state,
             if (supported)
             {
                 const auto timeline = session.GetTimelineProperties();
+                if (!timeline) return false;
                 const auto start = timeline.MinSeekTime();
                 const auto end = timeline.MaxSeekTime();
                 if (end > start)
@@ -401,6 +376,7 @@ bool WindowsMediaController::Execute(const WindowsMediaState& state,
                         std::clamp(value, 0.0F, 1.0F)));
                     (void)session.TryChangePlaybackPositionAsync(requested.count());
                 }
+                else return false;
             }
             break;
         }

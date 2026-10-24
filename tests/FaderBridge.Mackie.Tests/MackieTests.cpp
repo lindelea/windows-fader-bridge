@@ -4,6 +4,8 @@
 #include "Windows80Preset.h"
 #include "AudioTrackCommandQueue.h"
 #include "AudioVolumeReadback.h"
+#include "WindowsMediaReadback.h"
+#include <chrono>
 #include "WindowsMediaTimeline.h"
 #include "MackieDisplayClock.h"
 #include "MackieJogInput.h"
@@ -19,6 +21,7 @@
 #include <fstream>
 
 using namespace mackie;
+int WinrtMediaNullReadbackTests();
 namespace
 {
 int checks = 0;
@@ -28,6 +31,7 @@ void Check(bool condition, const char* name)
     if (!condition) throw std::runtime_error(name);
 }
 bool Near(float a, float b) { return std::abs(a - b) < .0002F; }
+#include "MediaReadbackTests.h"
 std::uint32_t Raw(int status, int a, int b = 0) { return status | (a << 8) | (b << 16); }
 std::uint32_t Raw(const Bytes& bytes) { return Raw(bytes[0], bytes[1], bytes.size() > 2 ? bytes[2] : 0); }
 Track Make(const wchar_t* key = L"app", float volume = .5F)
@@ -852,8 +856,9 @@ int main()
 {
     try
     {
-        MultipleDevices(); Codec(); PlaybackClock(); TimeDisplay(); IdleClock(); Interaction(); Buttons(); CurrentEncoders(); Identity(); Feedback(); Settings(); Fuzz(); AudioIdentityQueue(); WindowsPreset(); JogModes(); JogWindowsPackets(); JogMediaSeconds(); NativeJogMessages();
-        std::cout << "PASS: 18 test groups, " << checks << " assertions; no MIDI ports opened, no audio changed, no global input injected.\n"; return 0;
+        checks += WinrtMediaNullReadbackTests();
+        MediaReadbackTests(); MultipleDevices(); Codec(); PlaybackClock(); TimeDisplay(); IdleClock(); Interaction(); Buttons(); CurrentEncoders(); Identity(); Feedback(); Settings(); Fuzz(); AudioIdentityQueue(); WindowsPreset(); JogModes(); JogWindowsPackets(); JogMediaSeconds(); NativeJogMessages();
+        std::cout << "PASS: 20 test groups, " << checks << " assertions; no MIDI ports opened, no audio changed, no global input injected.\n"; return 0;
     }
     catch (const std::exception& e) { std::cerr << "FAIL after " << checks << " assertions: " << e.what() << '\n'; return 1; }
 }

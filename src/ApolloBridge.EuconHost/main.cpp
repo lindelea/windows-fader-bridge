@@ -6,6 +6,8 @@
 #include "Protocol.h"
 #include "ApolloDesktop.h"
 #include "DesktopSettings.h"
+#include "SdkExampleProbe.h"
+#include "SdkExampleProcesses.h"
 #include "../BridgeGlobalShortcut.h"
 #include "../../tests/ApolloBridge.Tests/DesktopSettingsTests.h"
 #include <Windows.h>
@@ -21,7 +23,6 @@
 #include <sstream>
 #include <string_view>
 #include <thread>
-#include <tlhelp32.h>
 #include <windowsx.h>
 
 namespace
@@ -67,28 +68,7 @@ void Print(const std::string &text)
 }
 bool SdkExampleAdapterRunning()
 {
-    const HANDLE processes = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if (processes == INVALID_HANDLE_VALUE)
-        return true;
-    PROCESSENTRY32W entry{};
-    entry.dwSize = sizeof(entry);
-    if (!Process32FirstW(processes, &entry))
-    {
-        CloseHandle(processes);
-        return true;
-    }
-    bool found = false;
-    do
-    {
-        if (_wcsicmp(entry.szExeFile, L"EuConIO.exe") == 0 ||
-            _wcsicmp(entry.szExeFile, L"EuConApp.exe") == 0)
-        {
-            found = true;
-            break;
-        }
-    } while (Process32NextW(processes, &entry));
-    CloseHandle(processes);
-    return found;
+    return apollo::AnyProcessNamed({L"EuConIO.exe", L"EuConApp.exe"});
 }
 DWORD RestartSourceProcessId()
 {
@@ -242,6 +222,7 @@ std::wstring MeterDb(const std::vector<apollo::Meter> &meters, bool peakHold)
 }
 struct App
 {
+    apollo::SdkExampleProbe exampleProbe;
     std::atomic<bool> observationPending = false;
     HWND window = nullptr, connect = nullptr, logs = nullptr, language = nullptr, arm = nullptr,
          monitorArm = nullptr, allChannels = nullptr, safety = nullptr, configArm = nullptr;
@@ -654,12 +635,8 @@ struct App
             }
         }
         const auto euconFinished = std::chrono::steady_clock::now();
-        static ULONGLONG conflictCheckAt = 0;
-        if (GetTickCount64() >= conflictCheckAt)
-        {
-            adapterConflict = SdkExampleAdapterRunning();
-            conflictCheckAt = GetTickCount64() + 1000;
-        }
+        adapterConflict = exampleProbe.Check(eucon != nullptr, GetTickCount64(), false,
+                                             SdkExampleAdapterRunning);
         ButtonEnabled(connect,
                       snapshot.connected &&
                           (!channels.empty() || (snapshot.monitors.size() == 1 &&
@@ -727,7 +704,7 @@ struct App
         }
         else if (id == ConnectButton && !eucon)
         {
-            adapterConflict = SdkExampleAdapterRunning();
+            adapterConflict = exampleProbe.Check(false, GetTickCount64(), true, SdkExampleAdapterRunning);
             if (adapterConflict || !snapshot.connected)
                 return;
             try
@@ -1123,7 +1100,8 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM w, LPARAM l)
                 0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, 0, 0, 1, 1, window,
                 reinterpret_cast<HMENU>(static_cast<INT_PTR>(pair.second)), nullptr, nullptr);
         app->Fonts();
-        app->adapterConflict = SdkExampleAdapterRunning();
+        app->adapterConflict = app->preview ? false : app->exampleProbe.Check(
+            false, GetTickCount64(), true, SdkExampleAdapterRunning);
         if (!app->preview)
         {
             if (app->experimentalConfig) app->observer.EnableConfiguration();
