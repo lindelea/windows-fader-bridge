@@ -27,10 +27,11 @@
       <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
       <AdditionalIncludeDirectories>$(ProjectDir)..\..\src\FaderBridge.MackieHost;$(ProjectDir)..\..\src\FaderBridge.EuconHost;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
-    <Link><SubSystem>Console</SubSystem></Link>
+    <Link><SubSystem>Console</SubSystem><AdditionalDependencies>WindowsApp.lib;%(AdditionalDependencies)</AdditionalDependencies></Link>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="MackieTests.cpp" />
+    <ClCompile Include="WinrtMediaReadbackTests.cpp" />
     <ClCompile Include="..\..\src\FaderBridge.MackieHost\MackieSurface.cpp" />
     <ClCompile Include="..\..\src\FaderBridge.MackieHost\MackieSettings.cpp" />
     <ClCompile Include="..\..\src\FaderBridge.EuconHost\DiagnosticLog.cpp" />

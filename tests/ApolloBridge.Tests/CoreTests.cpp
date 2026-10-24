@@ -1,5 +1,7 @@
 #include "../../src/ApolloBridge.EuconHost/UpperDirectoryLayout.h"
 #include "../../src/ApolloBridge.EuconHost/DesktopChannelStatus.h"
+#include "../../src/ApolloBridge.EuconHost/SdkExampleProbe.h"
+#include "../../src/ApolloBridge.EuconHost/SdkExampleProcesses.h"
 #include "ChannelControl.h"
 #include "ChannelFeatureFixture.h"
 #include "ChannelLayout.h"
@@ -574,6 +576,7 @@ void MonitorTests()
 #include "ConfigTests.h"
 #include "PreferencesTests.h"
 #include "DesktopChannelStatusTests.h"
+#include "SdkExampleProbeTests.h"
 } // namespace
 #include "FeedbackUpdatePolicy.h"
 void FeedbackPolicyTests()
@@ -605,6 +608,7 @@ int main()
     try
     {
         JsonTests();
+        SdkExampleProbeTests();
         FeedbackPolicyTests();
         ProtocolTests();
         ModelTests();

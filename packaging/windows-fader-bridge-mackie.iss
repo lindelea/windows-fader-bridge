@@ -1,5 +1,5 @@
 #define ProductName "Windows Fader Bridge for Mackie Control"
-#define ProductVersion "1.0.2"
+#define ProductVersion "1.0.3"
 #define ProductExe "WindowsFaderBridge.Mackie.exe"
 #define ProductRepo "https://github.com/lindelea/windows-fader-bridge-mackie"
 
